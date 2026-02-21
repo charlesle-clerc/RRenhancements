@@ -10,12 +10,9 @@ local id = game.GameId
 
 for n, v in pairs(games) do
 	if id == v.id then
-		loadstring(
-			game:HttpGet(
-				"https://raw.githubusercontent.com/charlesle-clerc/RRenhancements/refs/heads/main/games/"
-					.. n
-					.. ".luau"
-			)
-		)()
+		local link = "https://raw.githubusercontent.com/charlesle-clerc/RRenhancements/refs/heads/main/games/"
+			.. n
+			.. ".luau"
+		loadstring(game:HttpGet(link))()
 	end
 end
