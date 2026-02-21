@@ -45,7 +45,6 @@ local function clone_value(v)
 	return v
 end
 
---// Remove all children matching a name.
 local function destroy_named(parent, name)
 	if not parent then
 		return
@@ -63,11 +62,13 @@ end
 --// =========================
 local a_box = {
 	main = a_tab:AddLeftGroupbox("Tune"),
+	no_dmg = a_tab:AddRightGroupbox("No Damage"),
+	tyres = a_tab:AddRightGroupbox("Tyres"),
 }
 
---// Keep A-Chassis off by default so first execute is menu-only.
 local a_state = {
 	enabled = false,
+	no_damage = false,
 }
 
 local a_tune = {
@@ -117,7 +118,6 @@ local a_tune = {
 	T_Boost = 16.8,
 }
 
---// Inject selected tune values into a spawned car.
 local function apply_tune(car)
 	if not a_state.enabled then
 		return
@@ -141,12 +141,63 @@ local function apply_tune(car)
 	end
 end
 
+local function get_ui_car()
+	local pg = lp:FindFirstChild("PlayerGui")
+	if not pg then
+		return nil
+	end
+
+	local ui = pg:FindFirstChild("A-Chassis Interface")
+	if not ui then
+		return nil
+	end
+
+	local car = ui:FindFirstChild("Car")
+	if not car or not car:IsA("ObjectValue") then
+		return nil
+	end
+
+	if car.Value and car.Value:IsA("Model") then
+		return car.Value
+	end
+
+	return nil
+end
+
+local function clear_dmg(car)
+	local info = car and car:FindFirstChild("Information")
+	local dmg = info and info:FindFirstChild("Damaged")
+	if dmg and dmg:IsA("BoolValue") and dmg.Value then
+		dmg.Value = false
+	end
+end
+
+local function nd_tick()
+	local car = get_ui_car()
+	if car then
+		clear_dmg(car)
+		return
+	end
+
+	local vs = ws:FindFirstChild("Vehicles")
+	if not vs then
+		return
+	end
+
+	for _, v in ipairs(vs:GetChildren()) do
+		clear_dmg(v)
+	end
+end
+
 local a_enabled = a_box.main:AddToggle("ach_enabled", {
 	Text = "Enabled",
 	Default = false,
 })
 
-a_box.main:AddLabel("Off by default | applies on spawn")
+local a_no_damage = a_box.no_dmg:AddToggle("ach_no_damage", {
+	Text = "No Damage",
+	Default = false,
+})
 
 local a_slider_defs = {
 	{ name = "Horsepower", key = "Horsepower", min = 300, max = 900, round = 0 },
@@ -169,7 +220,6 @@ for _, def in ipairs(a_slider_defs) do
 	a_def_by_name[def.name] = def
 end
 
---// Safe UI call helper (some lib builds may miss certain methods).
 local function call_ctrl(ctrl, name, ...)
 	local fn = ctrl and ctrl[name]
 	if type(fn) == "function" then
@@ -199,7 +249,6 @@ local a_value = a_box.main:AddSlider("ach_value", {
 
 local a_info = a_box.main:AddLabel("")
 
---// Keep dynamic slider in sync with current dropdown selection.
 local function sync_slider()
 	local def = a_def_by_name[a_pick_name]
 	if not def then
@@ -238,6 +287,211 @@ bind_changed(a_value, function(v)
 	end
 end)
 
+local wt_root = reps:FindFirstChild("WheelTune")
+local wt_defs = {
+	{ name = "F Target Friction", key = "FTargetFriction", min = 0.5, max = 3, round = 2 },
+	{ name = "R Target Friction", key = "RTargetFriction", min = 0.5, max = 3, round = 2 },
+	{ name = "F Wear Speed", key = "FWearSpeed", min = 0, max = 5, round = 2 },
+	{ name = "R Wear Speed", key = "RWearSpeed", min = 0, max = 5, round = 2 },
+}
+
+local wt_by_name = {}
+local wt_val_names = {}
+for _, def in ipairs(wt_defs) do
+	wt_by_name[def.name] = def
+	table.insert(wt_val_names, def.name)
+end
+
+local wt_car_vals = {}
+if wt_root then
+	for _, x in ipairs(wt_root:GetChildren()) do
+		if x:IsA("Folder") then
+			table.insert(wt_car_vals, x.Name)
+		end
+	end
+end
+
+table.sort(wt_car_vals)
+if #wt_car_vals == 0 then
+	wt_car_vals = { "---" }
+end
+local wt_car_now = wt_car_vals[1] or "---"
+local wt_tyre_vals = { "---" }
+local wt_tyre_now = wt_tyre_vals[1]
+local wt_val_now = wt_val_names[1]
+
+local wt_car = a_box.tyres:AddDropdown("ach_wt_car", {
+	Text = "Car",
+	Values = wt_car_vals,
+	Default = wt_car_now,
+})
+
+local wt_tyre = a_box.tyres:AddDropdown("ach_wt_tyre", {
+	Text = "Tyre",
+	Values = wt_tyre_vals,
+	Default = wt_tyre_now,
+})
+
+local wt_val = a_box.tyres:AddDropdown("ach_wt_val", {
+	Text = "Tyre Value",
+	Values = wt_val_names,
+	Default = wt_val_now,
+})
+
+local wt_slider = a_box.tyres:AddSlider("ach_wt_slider", {
+	Text = "Tyre Number",
+	Default = 1,
+	Min = 0,
+	Max = 5,
+	Rounding = 2,
+})
+
+local function get_rt_tyre()
+	local car = get_ui_car()
+	if not car then
+		return nil
+	end
+
+	local info = car:FindFirstChild("Information")
+	if not info then
+		return nil
+	end
+
+	local tyre = info:FindFirstChild(wt_tyre_now)
+	if tyre and tyre:IsA("Folder") then
+		return tyre
+	end
+
+	return info
+end
+
+local function get_rt_num(key)
+	local tyre = get_rt_tyre()
+	if not tyre then
+		return nil
+	end
+
+	local n = tyre:FindFirstChild(key)
+	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
+		return n
+	end
+
+	return nil
+end
+
+local function get_wt_tyre()
+	if not wt_root then
+		return nil
+	end
+
+	local car = wt_root:FindFirstChild(wt_car_now)
+	if not car or not car:IsA("Folder") then
+		return nil
+	end
+
+	local tyre = car:FindFirstChild(wt_tyre_now)
+	if not tyre or not tyre:IsA("Folder") then
+		return nil
+	end
+
+	return tyre
+end
+
+local function get_wt_num(key)
+	local tyre = get_wt_tyre()
+	if not tyre then
+		return nil
+	end
+
+	local n = tyre:FindFirstChild(key)
+	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
+		return n
+	end
+
+	return nil
+end
+
+local function sync_wt_tyre_list()
+	wt_tyre_vals = {}
+	if wt_root then
+		local car = wt_root:FindFirstChild(wt_car_now)
+		if car and car:IsA("Folder") then
+			for _, x in ipairs(car:GetChildren()) do
+				if x:IsA("Folder") then
+					table.insert(wt_tyre_vals, x.Name)
+				end
+			end
+		end
+	end
+
+	table.sort(wt_tyre_vals)
+	if #wt_tyre_vals == 0 then
+		wt_tyre_vals = { "---" }
+	end
+
+	if not table.find(wt_tyre_vals, wt_tyre_now) then
+		wt_tyre_now = wt_tyre_vals[1]
+	end
+
+	call_ctrl(wt_tyre, "SetValues", wt_tyre_vals)
+	call_ctrl(wt_tyre, "SetValue", wt_tyre_now)
+end
+
+local function sync_wt_slider()
+	local def = wt_by_name[wt_val_now]
+	if not def then
+		return
+	end
+
+	local v = def.min
+	local rt_num = get_rt_num(def.key)
+	local wt_num = get_wt_num(def.key)
+	local num = rt_num or wt_num
+
+	if num then
+		v = math.clamp(num.Value, def.min, def.max)
+	end
+
+	call_ctrl(wt_slider, "SetMin", def.min)
+	call_ctrl(wt_slider, "SetMax", def.max)
+	call_ctrl(wt_slider, "SetRounding", def.round)
+	call_ctrl(wt_slider, "SetValue", v)
+end
+
+bind_changed(wt_car, function(v)
+	wt_car_now = v
+	sync_wt_tyre_list()
+	sync_wt_slider()
+end)
+
+bind_changed(wt_tyre, function(v)
+	wt_tyre_now = v
+	sync_wt_slider()
+end)
+
+bind_changed(wt_val, function(v)
+	wt_val_now = v
+	sync_wt_slider()
+end)
+
+bind_changed(wt_slider, function(v)
+	local def = wt_by_name[wt_val_now]
+	if not def then
+		return
+	end
+
+	local next_v = math.clamp(v, def.min, def.max)
+	local rt_num = get_rt_num(def.key)
+	local wt_num = get_wt_num(def.key)
+
+	if rt_num then
+		rt_num.Value = next_v
+	end
+	if wt_num then
+		wt_num.Value = next_v
+	end
+end)
+
 local a_tcs = a_box.main:AddToggle("ach_tcs_enabled", {
 	Text = "TCS Enabled",
 	Default = a_tune.TCSEnabled,
@@ -251,22 +505,31 @@ bind_changed(a_enabled, function(v)
 	a_state.enabled = v
 end)
 
+bind_changed(a_no_damage, function(v)
+	a_state.no_damage = v
+	if v then
+		nd_tick()
+	end
+end)
+
 sync_slider()
+sync_wt_tyre_list()
+sync_wt_slider()
 
 task.spawn(function()
-	--// Prevent game-side ACTune objects from overriding chosen values.
 	while task.wait(0.1) do
-		if not a_state.enabled then
-			continue
+		if a_state.enabled then
+			destroy_named(lp, "ACTune")
+			destroy_named(reps:FindFirstChild("Events"), "ACTune")
 		end
 
-		destroy_named(lp, "ACTune")
-		destroy_named(reps:FindFirstChild("Events"), "ACTune")
+		if a_state.no_damage then
+			nd_tick()
+		end
 	end
 end)
 
 task.spawn(function()
-	--// Apply to both new and existing vehicles.
 	local vehicles = ws:WaitForChild("Vehicles")
 	vehicles.ChildAdded:Connect(function(x)
 		apply_tune(x)
@@ -280,7 +543,6 @@ end)
 --// =========================
 --// Gravity
 --// =========================
---// Gravity is fully menu-driven and off by default.
 local og_grav = math.floor(ws.Gravity * 10) / 10
 local og_grav_real = ws.Gravity
 
@@ -516,7 +778,6 @@ local function set_label(label, txt)
 	end
 end
 
---// Supports map-style and list-style multi dropdown return values.
 local function has_mode(mode_set, mode_key)
 	if type(mode_set) ~= "table" then
 		return false
@@ -534,7 +795,6 @@ local function has_mode(mode_set, mode_key)
 	return false
 end
 
---// Read current speed from local player's humanoid root part.
 local function read_speed()
 	local character = lp.Character
 	if not character then
@@ -549,7 +809,6 @@ local function read_speed()
 	return root.AssemblyLinearVelocity.Magnitude
 end
 
---// Condition checks used by advanced gravity logic.
 local g_cond_checks = {
 	[g_cond.accel] = function()
 		return g_state.speed_delta > 0.05
@@ -570,7 +829,6 @@ local function condition_hit(mode_key)
 	return fn and fn() or false
 end
 
---// Priority: accel/brake set is checked before speed set.
 local function eval_set(mode_set)
 	local has_drive = has_mode(mode_set, g_cond.accel) or has_mode(mode_set, g_cond.brake)
 	local has_speed = has_mode(mode_set, g_cond.over) or has_mode(mode_set, g_cond.under)
@@ -587,7 +845,6 @@ local function eval_set(mode_set)
 	return false
 end
 
---// Select the spoofed gravity value for __index hook reads.
 local g_hook_getters = {
 	["Actual Original"] = function()
 		return og_grav_real
@@ -614,7 +871,6 @@ local function hook_value()
 	return fn and fn() or og_grav_real
 end
 
---// Install hook only when needed, to keep first execute as non-invasive as possible.
 local hook_ready = false
 local function init_hook()
 	if hook_ready then
@@ -647,7 +903,6 @@ bind_changed(g_hook_enabled, function(v)
 	end
 end)
 
---// Main gravity update loop.
 run_service.Heartbeat:Connect(function(dt)
 	local speed = read_speed()
 	g_state.speed_delta = speed - g_state.speed
