@@ -10,6 +10,12 @@ local id = game.GameId
 
 for n, v in pairs(games) do
 	if id == v.id then
-		print(n)
+		loadstring(
+			game:HttpGet(
+				"https://raw.githubusercontent.com/charlesle-clerc/RRenhancements/refs/heads/main/games/"
+					.. n
+					.. ".luau"
+			)
+		)()
 	end
 end
