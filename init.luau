@@ -1,8 +1,6 @@
 local games = {
 	project_apex = {
 		id = 2153167977,
-		name = "Formula Apex",
-		places = {},
 	},
 }
 
@@ -13,6 +11,11 @@ for n, v in pairs(games) do
 		local link = "https://raw.githubusercontent.com/charlesle-clerc/RRenhancements/refs/heads/main/games/"
 			.. n
 			.. ".luau"
-		loadstring(game:HttpGet(link))()
+		local s, e = pcall(function()
+			loadstring(game:HttpGet(link))()
+		end)
+		if not s then
+			print("[RRe] failed on load: " .. e)
+		end
 	end
 end
