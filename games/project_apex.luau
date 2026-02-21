@@ -27,14 +27,17 @@ local grav_toggle = grav_boxes.main:AddToggle("gravity_main_enabled", {
 local grav_slider = grav_boxes.main:AddSlider("gravity_main_gravity", {
 	Text = "Gravity",
 	Default = og_grav,
-	Min = math.max(og_grav - 1000, 1),
-	Max = math.min(og_grav + 1000, 2000),
+	Min = 1,
+	Max = 1000,
 	Rounding = 1,
 })
 
 local grav_slider_v = og_grav
-grav_slider.OnChanged(function(v)
-	grav_slider_y = v
+grav_slider:OnChanged(function(v)
+	grav_slider_v = v
+	if grav_toggle.Value then
+		workspace.Gravity = grav_slider_v
+	end
 end)
 
 grav_toggle:OnChanged(function(s)
