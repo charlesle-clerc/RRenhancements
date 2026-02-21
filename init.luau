@@ -15,7 +15,7 @@ for n, v in pairs(games) do
 			loadstring(game:HttpGet(link))()
 		end)
 		if not s then
-			print("[RRe] failed on load: " .. e)
+			print("rre: game load failed: " .. tostring(e))
 		end
 	end
 end
