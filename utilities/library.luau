@@ -12,6 +12,7 @@ local defaults = {
 	config_root = "RRenhancements",
 	game_key = "default",
 	game_file = nil,
+	tabs = nil,
 	notify_side = "Right",
 	logo_name = "rre_white_logo",
 	logo_fallback_id = 4155801252,
@@ -106,6 +107,69 @@ local function get_logo(lib, opts)
 	return "rbxassetid://" .. tostring(opts.logo_fallback_id)
 end
 
+local function tab_id_from_name(name)
+	local id = string.lower(name)
+	id = id:gsub("%s+", "_")
+	id = id:gsub("[^%w_]", "")
+	if id == "" then
+		id = "tab"
+	end
+	return id
+end
+
+local function build_tabs(window, tab_defs)
+	local tabs = {}
+	local tab_list = {}
+
+	local defs = tab_defs
+	if type(defs) ~= "table" or #defs == 0 then
+		defs = {
+			{ id = "main", name = "Main" },
+			{ id = "ui_settings", name = "UI Settings" },
+		}
+	end
+
+	for _, raw in ipairs(defs) do
+		local tab_name = nil
+		local tab_id = nil
+
+		if type(raw) == "string" then
+			tab_name = raw
+			tab_id = tab_id_from_name(raw)
+		elseif type(raw) == "table" then
+			tab_name = raw.name or raw.title or raw.id
+			tab_id = raw.id or (type(tab_name) == "string" and tab_id_from_name(tab_name) or nil)
+		end
+
+		if type(tab_name) == "string" and tab_name ~= "" and type(tab_id) == "string" and tab_id ~= "" then
+			local tab = window:AddTab(tab_name)
+			tabs[tab_id] = tab
+			table.insert(tab_list, tab)
+		end
+	end
+
+	if next(tabs) == nil then
+		local tab = window:AddTab("Main")
+		tabs.main = tab
+		table.insert(tab_list, tab)
+	end
+
+	return tabs, tab_list
+end
+
+local function get_ui_tab(window, tabs)
+	if tabs.ui_settings then
+		return tabs.ui_settings
+	end
+	if tabs.ui then
+		return tabs.ui
+	end
+
+	local tab = window:AddTab("UI Settings")
+	tabs.ui_settings = tab
+	return tab
+end
+
 function module.create(options)
 	local opts = table.clone(defaults)
 	if type(options) == "table" then
@@ -132,10 +196,8 @@ function module.create(options)
 		AutoShow = true,
 	})
 
-	local tabs = {
-		main = window:AddTab("Main"),
-		ui = window:AddTab("UI Settings"),
-	}
+	local tabs, tab_list = build_tabs(window, opts.tabs)
+	local ui_tab = get_ui_tab(window, tabs)
 
 	i.themem:SetLibrary(i.lib)
 	i.savem:SetLibrary(i.lib)
@@ -143,8 +205,8 @@ function module.create(options)
 	i.savem:SetFolder(string.format("%s/%s", opts.config_root, opts.game_key))
 	i.savem:IgnoreThemeSettings()
 	i.savem:SetIgnoreIndexes({ "MenuKeybind" })
-	i.themem:ApplyToTab(tabs.ui)
-	i.savem:BuildConfigSection(tabs.ui)
+	i.themem:ApplyToTab(ui_tab)
+	i.savem:BuildConfigSection(ui_tab)
 	i.themem:LoadDefault()
 	i.savem:LoadAutoloadConfig()
 
@@ -154,6 +216,7 @@ function module.create(options)
 		themem = i.themem,
 		window = window,
 		tabs = tabs,
+		tab_list = tab_list,
 		game_name = game_name,
 		build_date = build_date,
 		version = opts.version,

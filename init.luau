@@ -1,3 +1,8 @@
+if _G.rre_executed then
+	return
+end
+_G.rre_executed = true
+
 local games = {
 	project_apex = {
 		id = 2153167977,
