@@ -20,8 +20,10 @@ local grav = app.tabs.grav
 local a_tab = app.tabs.a_chassis
 
 local players = game:GetService("Players")
+local reps = game:GetService("ReplicatedStorage")
+local ws = game:GetService("Workspace")
 local run_service = game:GetService("RunService")
-local local_player = players.LocalPlayer
+local lp = players.LocalPlayer
 
 --// Shared helpers
 local function bind_changed(ctrl, setter)
@@ -43,6 +45,19 @@ local function clone_value(v)
 	return v
 end
 
+--// Remove all children matching a name.
+local function destroy_named(parent, name)
+	if not parent then
+		return
+	end
+
+	for _, x in ipairs(parent:GetChildren()) do
+		if x.Name == name then
+			x:Destroy()
+		end
+	end
+end
+
 --// =========================
 --// A-Chassis
 --// =========================
@@ -50,8 +65,9 @@ local a_box = {
 	main = a_tab:AddLeftGroupbox("Tune"),
 }
 
+--// Keep A-Chassis off by default so first execute is menu-only.
 local a_state = {
-	enabled = true,
+	enabled = false,
 }
 
 local a_tune = {
@@ -101,6 +117,7 @@ local a_tune = {
 	T_Boost = 16.8,
 }
 
+--// Inject selected tune values into a spawned car.
 local function apply_tune(car)
 	if not a_state.enabled then
 		return
@@ -126,10 +143,10 @@ end
 
 local a_enabled = a_box.main:AddToggle("ach_enabled", {
 	Text = "Enabled",
-	Default = true,
+	Default = false,
 })
 
-a_box.main:AddLabel("Applies on spawn")
+a_box.main:AddLabel("Off by default | applies on spawn")
 
 local a_slider_defs = {
 	{ name = "Horsepower", key = "Horsepower", min = 300, max = 900, round = 0 },
@@ -152,6 +169,7 @@ for _, def in ipairs(a_slider_defs) do
 	a_def_by_name[def.name] = def
 end
 
+--// Safe UI call helper (some lib builds may miss certain methods).
 local function call_ctrl(ctrl, name, ...)
 	local fn = ctrl and ctrl[name]
 	if type(fn) == "function" then
@@ -180,7 +198,9 @@ local a_value = a_box.main:AddSlider("ach_value", {
 })
 
 local a_info = a_box.main:AddLabel("")
-local function sync_a_slider()
+
+--// Keep dynamic slider in sync with current dropdown selection.
+local function sync_slider()
 	local def = a_def_by_name[a_pick_name]
 	if not def then
 		return
@@ -202,7 +222,7 @@ end
 
 bind_changed(a_pick, function(v)
 	a_pick_name = v
-	sync_a_slider()
+	sync_slider()
 end)
 
 bind_changed(a_value, function(v)
@@ -231,33 +251,23 @@ bind_changed(a_enabled, function(v)
 	a_state.enabled = v
 end)
 
-sync_a_slider()
+sync_slider()
 
 task.spawn(function()
+	--// Prevent game-side ACTune objects from overriding chosen values.
 	while task.wait(0.1) do
 		if not a_state.enabled then
 			continue
 		end
 
-		for _, x in ipairs(game.Players.LocalPlayer:GetChildren()) do
-			if x.Name == "ACTune" then
-				x:Destroy()
-			end
-		end
-
-		local events = game.ReplicatedStorage:FindFirstChild("Events")
-		if events then
-			for _, x in ipairs(events:GetChildren()) do
-				if x.Name == "ACTune" then
-					x:Destroy()
-				end
-			end
-		end
+		destroy_named(lp, "ACTune")
+		destroy_named(reps:FindFirstChild("Events"), "ACTune")
 	end
 end)
 
 task.spawn(function()
-	local vehicles = game.Workspace:WaitForChild("Vehicles")
+	--// Apply to both new and existing vehicles.
+	local vehicles = ws:WaitForChild("Vehicles")
 	vehicles.ChildAdded:Connect(function(x)
 		apply_tune(x)
 	end)
@@ -270,8 +280,9 @@ end)
 --// =========================
 --// Gravity
 --// =========================
-local og_grav = math.floor(workspace.Gravity * 10) / 10
-local og_grav_real = workspace.Gravity
+--// Gravity is fully menu-driven and off by default.
+local og_grav = math.floor(ws.Gravity * 10) / 10
+local og_grav_real = ws.Gravity
 
 local g_box = {
 	main = grav:AddLeftGroupbox("Main"),
@@ -284,7 +295,7 @@ local g_state = {
 	base_grav = og_grav,
 	smooth_grav = og_grav,
 	target_grav = og_grav,
-	applied_grav = workspace.Gravity,
+	applied_grav = ws.Gravity,
 
 	speed = 0,
 	speed_delta = 0,
@@ -334,13 +345,13 @@ end)
 
 bind_changed(g_main_enabled, function(v)
 	if not v then
-		workspace.Gravity = og_grav
+		ws.Gravity = og_grav
 		g_state.smooth_grav = og_grav
 		g_state.mode = "Off"
 		return
 	end
 
-	g_state.smooth_grav = workspace.Gravity
+	g_state.smooth_grav = ws.Gravity
 end)
 
 local g_cond_up = g_box.conds:AddDropdown("grav_cond_up", {
@@ -475,12 +486,6 @@ local g_hook_custom = g_box.hook:AddSlider("grav_hook_custom", {
 
 bind_many({
 	{
-		ctrl = g_hook_enabled,
-		set = function(v)
-			g_state.hook_enabled = v
-		end,
-	},
-	{
 		ctrl = g_hook_target,
 		set = function(v)
 			g_state.hook_target = v
@@ -511,6 +516,7 @@ local function set_label(label, txt)
 	end
 end
 
+--// Supports map-style and list-style multi dropdown return values.
 local function has_mode(mode_set, mode_key)
 	if type(mode_set) ~= "table" then
 		return false
@@ -528,8 +534,9 @@ local function has_mode(mode_set, mode_key)
 	return false
 end
 
+--// Read current speed from local player's humanoid root part.
 local function read_speed()
-	local character = local_player.Character
+	local character = lp.Character
 	if not character then
 		return 0
 	end
@@ -542,6 +549,7 @@ local function read_speed()
 	return root.AssemblyLinearVelocity.Magnitude
 end
 
+--// Condition checks used by advanced gravity logic.
 local g_cond_checks = {
 	[g_cond.accel] = function()
 		return g_state.speed_delta > 0.05
@@ -562,6 +570,7 @@ local function condition_hit(mode_key)
 	return fn and fn() or false
 end
 
+--// Priority: accel/brake set is checked before speed set.
 local function eval_set(mode_set)
 	local has_drive = has_mode(mode_set, g_cond.accel) or has_mode(mode_set, g_cond.brake)
 	local has_speed = has_mode(mode_set, g_cond.over) or has_mode(mode_set, g_cond.under)
@@ -578,6 +587,7 @@ local function eval_set(mode_set)
 	return false
 end
 
+--// Select the spoofed gravity value for __index hook reads.
 local g_hook_getters = {
 	["Actual Original"] = function()
 		return og_grav_real
@@ -604,23 +614,40 @@ local function hook_value()
 	return fn and fn() or og_grav_real
 end
 
-local mt = getrawmetatable(game)
-local old_index = mt.__index
-
-setreadonly(mt, false)
-mt.__index = newcclosure(function(self, key)
-	if self == workspace and key == "Gravity" and g_state.hook_enabled then
-		return hook_value()
+--// Install hook only when needed, to keep first execute as non-invasive as possible.
+local hook_ready = false
+local function init_hook()
+	if hook_ready then
+		return
 	end
 
-	if type(old_index) == "function" then
-		return old_index(self, key)
-	end
+	local mt = getrawmetatable(game)
+	local old_index = mt.__index
 
-	return old_index[key]
+	setreadonly(mt, false)
+	mt.__index = newcclosure(function(self, key)
+		if self == ws and key == "Gravity" and g_state.hook_enabled then
+			return hook_value()
+		end
+
+		if type(old_index) == "function" then
+			return old_index(self, key)
+		end
+
+		return old_index[key]
+	end)
+	setreadonly(mt, true)
+	hook_ready = true
+end
+
+bind_changed(g_hook_enabled, function(v)
+	g_state.hook_enabled = v
+	if v then
+		init_hook()
+	end
 end)
-setreadonly(mt, true)
 
+--// Main gravity update loop.
 run_service.Heartbeat:Connect(function(dt)
 	local speed = read_speed()
 	g_state.speed_delta = speed - g_state.speed
@@ -645,8 +672,8 @@ run_service.Heartbeat:Connect(function(dt)
 		local alpha = 1 - math.exp(-10 * dt)
 		g_state.smooth_grav = g_state.smooth_grav + (target - g_state.smooth_grav) * alpha
 
-		if math.abs(workspace.Gravity - g_state.smooth_grav) > 0.01 then
-			workspace.Gravity = g_state.smooth_grav
+		if math.abs(ws.Gravity - g_state.smooth_grav) > 0.01 then
+			ws.Gravity = g_state.smooth_grav
 		end
 	else
 		g_state.mode = "Off"
@@ -654,7 +681,7 @@ run_service.Heartbeat:Connect(function(dt)
 		g_state.smooth_grav = og_grav
 	end
 
-	g_state.applied_grav = workspace.Gravity
+	g_state.applied_grav = ws.Gravity
 	g_state.status_dt += dt
 	if g_state.status_dt < 0.1 then
 		return
