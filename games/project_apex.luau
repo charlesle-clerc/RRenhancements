@@ -287,7 +287,6 @@ bind_changed(a_value, function(v)
 	end
 end)
 
-local wt_root = reps:FindFirstChild("WheelTune")
 local wt_defs = {
 	{ name = "F Target Friction", key = "FTargetFriction", min = 0.5, max = 3, round = 2 },
 	{ name = "R Target Friction", key = "RTargetFriction", min = 0.5, max = 3, round = 2 },
@@ -303,9 +302,10 @@ for _, def in ipairs(wt_defs) do
 end
 
 local wt_car_vals = {}
-if wt_root then
-	for _, x in ipairs(wt_root:GetChildren()) do
-		if x:IsA("Folder") then
+local vs_boot = ws:FindFirstChild("Vehicles")
+if vs_boot then
+	for _, x in ipairs(vs_boot:GetChildren()) do
+		if x:IsA("Model") then
 			table.insert(wt_car_vals, x.Name)
 		end
 	end
@@ -346,8 +346,27 @@ local wt_slider = a_box.tyres:AddSlider("ach_wt_slider", {
 	Rounding = 2,
 })
 
-local function get_rt_tyre()
+local function get_rt_car()
 	local car = get_ui_car()
+	if car then
+		return car
+	end
+
+	local vs = ws:FindFirstChild("Vehicles")
+	if not vs then
+		return nil
+	end
+
+	local pick = vs:FindFirstChild(wt_car_now)
+	if pick and pick:IsA("Model") then
+		return pick
+	end
+
+	return nil
+end
+
+local function get_rt_tyre()
+	local car = get_rt_car()
 	if not car then
 		return nil
 	end
@@ -357,12 +376,12 @@ local function get_rt_tyre()
 		return nil
 	end
 
-	local tyre = info:FindFirstChild(wt_tyre_now)
-	if tyre and tyre:IsA("Folder") then
-		return tyre
+	local wheel = info:FindFirstChild("WheelInfo")
+	if wheel and wheel:IsA("Folder") then
+		return wheel
 	end
 
-	return info
+	return nil
 end
 
 local function get_rt_num(key)
@@ -379,59 +398,48 @@ local function get_rt_num(key)
 	return nil
 end
 
-local function get_wt_tyre()
-	if not wt_root then
-		return nil
+local function get_rt_comp()
+	local car = get_rt_car()
+	if not car then
+		return "---"
 	end
 
-	local car = wt_root:FindFirstChild(wt_car_now)
-	if not car or not car:IsA("Folder") then
-		return nil
+	local info = car:FindFirstChild("Information")
+	local tyre = info and info:FindFirstChild("Tyre")
+	if tyre and tyre:IsA("StringValue") and tyre.Value ~= "" then
+		return tyre.Value
 	end
 
-	local tyre = car:FindFirstChild(wt_tyre_now)
-	if not tyre or not tyre:IsA("Folder") then
-		return nil
-	end
-
-	return tyre
+	return "---"
 end
 
-local function get_wt_num(key)
-	local tyre = get_wt_tyre()
-	if not tyre then
-		return nil
-	end
-
-	local n = tyre:FindFirstChild(key)
-	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
-		return n
-	end
-
-	return nil
-end
-
-local function sync_wt_tyre_list()
-	wt_tyre_vals = {}
-	if wt_root then
-		local car = wt_root:FindFirstChild(wt_car_now)
-		if car and car:IsA("Folder") then
-			for _, x in ipairs(car:GetChildren()) do
-				if x:IsA("Folder") then
-					table.insert(wt_tyre_vals, x.Name)
-				end
+local function sync_wt_car_list()
+	wt_car_vals = {}
+	local vs = ws:FindFirstChild("Vehicles")
+	if vs then
+		for _, x in ipairs(vs:GetChildren()) do
+			if x:IsA("Model") then
+				table.insert(wt_car_vals, x.Name)
 			end
 		end
 	end
 
-	table.sort(wt_tyre_vals)
-	if #wt_tyre_vals == 0 then
-		wt_tyre_vals = { "---" }
+	table.sort(wt_car_vals)
+	if #wt_car_vals == 0 then
+		wt_car_vals = { "---" }
 	end
 
-	if not table.find(wt_tyre_vals, wt_tyre_now) then
-		wt_tyre_now = wt_tyre_vals[1]
+	if not table.find(wt_car_vals, wt_car_now) then
+		wt_car_now = wt_car_vals[1]
 	end
+
+	call_ctrl(wt_car, "SetValues", wt_car_vals)
+	call_ctrl(wt_car, "SetValue", wt_car_now)
+end
+
+local function sync_wt_tyre_list()
+	wt_tyre_now = get_rt_comp()
+	wt_tyre_vals = { wt_tyre_now }
 
 	call_ctrl(wt_tyre, "SetValues", wt_tyre_vals)
 	call_ctrl(wt_tyre, "SetValue", wt_tyre_now)
@@ -445,8 +453,7 @@ local function sync_wt_slider()
 
 	local v = def.min
 	local rt_num = get_rt_num(def.key)
-	local wt_num = get_wt_num(def.key)
-	local num = rt_num or wt_num
+	local num = rt_num
 
 	if num then
 		v = math.clamp(num.Value, def.min, def.max)
@@ -482,13 +489,9 @@ bind_changed(wt_slider, function(v)
 
 	local next_v = math.clamp(v, def.min, def.max)
 	local rt_num = get_rt_num(def.key)
-	local wt_num = get_wt_num(def.key)
 
 	if rt_num then
 		rt_num.Value = next_v
-	end
-	if wt_num then
-		wt_num.Value = next_v
 	end
 end)
 
@@ -513,10 +516,12 @@ bind_changed(a_no_damage, function(v)
 end)
 
 sync_slider()
+sync_wt_car_list()
 sync_wt_tyre_list()
 sync_wt_slider()
 
 task.spawn(function()
+	local wt_t = 0
 	while task.wait(0.1) do
 		if a_state.enabled then
 			destroy_named(lp, "ACTune")
@@ -525,6 +530,14 @@ task.spawn(function()
 
 		if a_state.no_damage then
 			nd_tick()
+		end
+
+		wt_t += 0.1
+		if wt_t >= 0.5 then
+			wt_t = 0
+			sync_wt_car_list()
+			sync_wt_tyre_list()
+			sync_wt_slider()
 		end
 	end
 end)
