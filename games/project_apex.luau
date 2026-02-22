@@ -62,13 +62,24 @@ end
 --// =========================
 local a_box = {
 	main = a_tab:AddLeftGroupbox("Tune"),
+	rt = a_tab:AddLeftGroupbox("Runtime"),
 	no_dmg = a_tab:AddRightGroupbox("No Damage"),
 	tyres = a_tab:AddRightGroupbox("Tyres"),
 }
 
 local a_state = {
 	enabled = false,
-	no_damage = false,
+	nd_fx = false,
+	nd_vis = false,
+	no_deg = false,
+	deg_delay = 4,
+	fine = false,
+	fine_step = 0.1,
+	force_drs = false,
+	df_lock = false,
+	df_f = 545,
+	df_r = 670,
+	df_drag = 66.1,
 }
 
 local a_tune = {
@@ -172,12 +183,136 @@ local function clear_dmg(car)
 	end
 end
 
+local function clone_tune(src)
+	local out = {}
+	for k, v in pairs(src) do
+		out[k] = clone_value(v)
+	end
+	return out
+end
+
+local a_prof = {}
+local a_prof_key = nil
+
+local function car_key(car)
+	if not car then
+		return nil
+	end
+
+	local info = car:FindFirstChild("Information")
+	local era = info and info:FindFirstChild("Era")
+	local era_v = ""
+	if era then
+		if era:IsA("StringValue") then
+			era_v = era.Value
+		elseif era:IsA("NumberValue") or era:IsA("IntValue") then
+			era_v = tostring(era.Value)
+		end
+	end
+
+	if era_v ~= "" then
+		return era_v .. "|" .. car.Name
+	end
+	return car.Name
+end
+
+local function save_prof(key)
+	if not key then
+		return
+	end
+	a_prof[key] = clone_tune(a_tune)
+end
+
+local function load_prof(key)
+	local t = key and a_prof[key]
+	if not t then
+		return false
+	end
+	for k in pairs(a_tune) do
+		a_tune[k] = clone_value(t[k])
+	end
+	return true
+end
+
+local function block_sig(sig)
+	if not sig then
+		return
+	end
+	if type(getconnections) ~= "function" then
+		return
+	end
+
+	for _, conn in ipairs(getconnections(sig)) do
+		if conn.Disable then
+			conn:Disable()
+		elseif conn.Disconnect then
+			conn:Disconnect()
+		end
+	end
+end
+
+local function block_dmg_remotes(car)
+	if not a_state.nd_vis then
+		return
+	end
+
+	local seat = car and car:FindFirstChild("DriveSeat")
+	if not seat then
+		return
+	end
+
+	local nose = seat:FindFirstChild("NoseDamage")
+	local rw = seat:FindFirstChild("RWDamage")
+
+	if nose then
+		block_sig(nose.OnClientEvent)
+	end
+	if rw then
+		block_sig(rw.OnClientEvent)
+	end
+end
+
+local function clear_dmg_remotes(car)
+	local seat = car and car:FindFirstChild("DriveSeat")
+	if not seat then
+		return
+	end
+
+	local fw = seat:FindFirstChild("FWDamage")
+
+	if fw then
+		firesignal(fw.OnClientEvent, false)
+	end
+end
+
+local function refresh_tyres(car)
+	local ev = car and car:FindFirstChild("PitEvent")
+	if ev then
+		firesignal(ev.OnClientEvent)
+	end
+end
+
+local nd_all_t = 0
 local function nd_tick()
 	local car = get_ui_car()
 	if car then
-		clear_dmg(car)
+		if a_state.nd_vis then
+			block_dmg_remotes(car)
+		end
+		if a_state.nd_fx then
+			clear_dmg(car)
+			clear_dmg_remotes(car)
+		end
 		return
 	end
+
+	if not a_state.nd_fx then
+		return
+	end
+	if os.clock() - nd_all_t < 1 then
+		return
+	end
+	nd_all_t = os.clock()
 
 	local vs = ws:FindFirstChild("Vehicles")
 	if not vs then
@@ -186,6 +321,49 @@ local function nd_tick()
 
 	for _, v in ipairs(vs:GetChildren()) do
 		clear_dmg(v)
+		clear_dmg_remotes(v)
+	end
+end
+
+local function rt_tick()
+	local car = get_ui_car()
+	local info = car and car:FindFirstChild("Information") or nil
+	if not info then
+		return
+	end
+
+	if a_state.force_drs then
+		local drs = info:FindFirstChild("DRS")
+		if drs and drs:IsA("BoolValue") and not drs.Value then
+			drs.Value = true
+		end
+	end
+
+	if a_state.df_lock then
+		local down = info:FindFirstChild("DownforceInfo")
+		local f = down and down:FindFirstChild("FDownforce")
+		local r = down and down:FindFirstChild("RDownforce")
+		local d = down and down:FindFirstChild("Drag")
+		local eps = 0.01
+
+		if f and f:IsA("NumberValue") then
+			local tgt = math.clamp(a_state.df_f, 0, 2000)
+			if math.abs(f.Value - tgt) > eps then
+				f.Value = tgt
+			end
+		end
+		if r and r:IsA("NumberValue") then
+			local tgt = math.clamp(a_state.df_r, 0, 2000)
+			if math.abs(r.Value - tgt) > eps then
+				r.Value = tgt
+			end
+		end
+		if d and d:IsA("NumberValue") then
+			local tgt = math.clamp(a_state.df_drag, 0, 300)
+			if math.abs(d.Value - tgt) > eps then
+				d.Value = tgt
+			end
+		end
 	end
 end
 
@@ -194,9 +372,101 @@ local a_enabled = a_box.main:AddToggle("ach_enabled", {
 	Default = false,
 })
 
-local a_no_damage = a_box.no_dmg:AddToggle("ach_no_damage", {
-	Text = "No Damage",
+local a_nd_fx = a_box.no_dmg:AddToggle("ach_nd_fx", {
+	Text = "No Damage Effects",
 	Default = false,
+})
+
+local a_nd_vis = a_box.no_dmg:AddToggle("ach_nd_vis", {
+	Text = "No Damage Visuals",
+	Default = false,
+})
+
+a_box.no_dmg:AddButton({
+	Text = "Repair Now",
+	Func = function()
+		local car = get_ui_car()
+		if car then
+			clear_dmg(car)
+			clear_dmg_remotes(car)
+		end
+	end,
+})
+
+local function get_info(car)
+	return car and car:FindFirstChild("Information") or nil
+end
+
+local function cap_rt()
+	local car = get_ui_car()
+	local info = get_info(car)
+	if not info then
+		return
+	end
+
+	local down = info:FindFirstChild("DownforceInfo")
+	local f = down and down:FindFirstChild("FDownforce")
+	local r = down and down:FindFirstChild("RDownforce")
+	local d = down and down:FindFirstChild("Drag")
+	if f and f:IsA("NumberValue") then
+		a_state.df_f = f.Value
+	end
+	if r and r:IsA("NumberValue") then
+		a_state.df_r = r.Value
+	end
+	if d and d:IsA("NumberValue") then
+		a_state.df_drag = d.Value
+	end
+end
+
+local rt_drs = a_box.rt:AddToggle("ach_rt_drs", {
+	Text = "Force DRS",
+	Default = false,
+})
+
+local rt_df_on = a_box.rt:AddToggle("ach_rt_df_on", {
+	Text = "Downforce Lock",
+	Default = false,
+})
+
+local rt_df_f = a_box.rt:AddSlider("ach_rt_df_f", {
+	Text = "Front Downforce",
+	Default = a_state.df_f,
+	Min = 0,
+	Max = 2000,
+	Rounding = 0,
+})
+
+local rt_df_r = a_box.rt:AddSlider("ach_rt_df_r", {
+	Text = "Rear Downforce",
+	Default = a_state.df_r,
+	Min = 0,
+	Max = 2000,
+	Rounding = 0,
+})
+
+local rt_df_drag = a_box.rt:AddSlider("ach_rt_df_drag", {
+	Text = "Drag",
+	Default = a_state.df_drag,
+	Min = 0,
+	Max = 300,
+	Rounding = 2,
+})
+
+a_box.rt:AddButton({
+	Text = "Read Current Runtime",
+	Func = function()
+		cap_rt()
+		if rt_df_f and rt_df_f.SetValue then
+			pcall(rt_df_f.SetValue, rt_df_f, a_state.df_f)
+		end
+		if rt_df_r and rt_df_r.SetValue then
+			pcall(rt_df_r.SetValue, rt_df_r, a_state.df_r)
+		end
+		if rt_df_drag and rt_df_drag.SetValue then
+			pcall(rt_df_drag.SetValue, rt_df_drag, a_state.df_drag)
+		end
+	end,
 })
 
 local a_slider_defs = {
@@ -234,9 +504,10 @@ end
 local a_pick_name = a_pick_values[1]
 local a_pick_def = a_def_by_name[a_pick_name]
 local a_pick = a_box.main:AddDropdown("ach_pick", {
-	Text = "Tune",
+	Text = "Tune Key",
 	Values = a_pick_values,
 	Default = a_pick_name,
+	Searchable = true,
 })
 
 local a_value = a_box.main:AddSlider("ach_value", {
@@ -248,6 +519,19 @@ local a_value = a_box.main:AddSlider("ach_value", {
 })
 
 local a_info = a_box.main:AddLabel("")
+
+local a_fine = a_box.main:AddToggle("ach_fine_on", {
+	Text = "Fine Step Mode",
+	Default = false,
+})
+
+local a_fine_step = a_box.main:AddSlider("ach_fine_step", {
+	Text = "Fine Step",
+	Default = a_state.fine_step,
+	Min = 0.01,
+	Max = 5,
+	Rounding = 2,
+})
 
 local function sync_slider()
 	local def = a_def_by_name[a_pick_name]
@@ -269,6 +553,13 @@ local function sync_slider()
 	end
 end
 
+local function step_round(v, s)
+	if s <= 0 then
+		return v
+	end
+	return math.floor((v / s) + 0.5) * s
+end
+
 bind_changed(a_pick, function(v)
 	a_pick_name = v
 	sync_slider()
@@ -281,11 +572,67 @@ bind_changed(a_value, function(v)
 	end
 
 	local next_v = clamp_def(def, v)
+	if a_state.fine then
+		local min_step = 10 ^ (-def.round)
+		local step = math.max(a_state.fine_step, min_step)
+		next_v = clamp_def(def, step_round(next_v, step))
+	end
 	a_tune[def.key] = next_v
 	if next_v ~= v then
 		call_ctrl(a_value, "SetValue", next_v)
 	end
+
+	if a_prof_key then
+		save_prof(a_prof_key)
+	end
 end)
+
+bind_changed(a_fine, function(v)
+	a_state.fine = v
+end)
+
+bind_changed(a_fine_step, function(v)
+	a_state.fine_step = math.max(0.01, v)
+end)
+
+bind_many({
+	{
+		ctrl = rt_drs,
+		set = function(v)
+			a_state.force_drs = v
+		end,
+	},
+	{
+		ctrl = rt_df_on,
+		set = function(v)
+			a_state.df_lock = v
+			if v then
+				cap_rt()
+				call_ctrl(rt_df_f, "SetValue", a_state.df_f)
+				call_ctrl(rt_df_r, "SetValue", a_state.df_r)
+				call_ctrl(rt_df_drag, "SetValue", a_state.df_drag)
+			end
+		end,
+	},
+	{
+		ctrl = rt_df_f,
+		set = function(v)
+			a_state.df_f = v
+		end,
+	},
+	{
+		ctrl = rt_df_r,
+		set = function(v)
+			a_state.df_r = v
+		end,
+	},
+	{
+		ctrl = rt_df_drag,
+		set = function(v)
+			a_state.df_drag = v
+		end,
+	},
+})
 
 local wt_defs = {
 	{ name = "F Target Friction", key = "FTargetFriction", min = 0.5, max = 3, round = 2 },
@@ -346,20 +693,48 @@ local wt_slider = a_box.tyres:AddSlider("ach_wt_slider", {
 	Rounding = 2,
 })
 
-local function get_rt_car()
-	local car = get_ui_car()
-	if car then
-		return car
-	end
+local wt_no_deg = a_box.tyres:AddToggle("ach_wt_no_deg", {
+	Text = "No Tyre Degradation",
+	Default = false,
+})
 
-	local vs = ws:FindFirstChild("Vehicles")
-	if not vs then
+local wt_delay = a_box.tyres:AddSlider("ach_wt_no_deg_delay", {
+	Text = "Refresh Delay (s)",
+	Default = a_state.deg_delay,
+	Min = 1,
+	Max = 15,
+	Rounding = 1,
+})
+
+a_box.tyres:AddButton({
+	Text = "Refresh Tyres Now",
+	Func = function()
+		local car = get_ui_car()
+		if car then
+			refresh_tyres(car)
+		end
+	end,
+})
+
+local wt_root = reps:FindFirstChild("WheelTune")
+
+local function get_rt_car()
+	return get_ui_car()
+end
+
+local function get_rt_era()
+	local car = get_rt_car()
+	local info = car and car:FindFirstChild("Information")
+	local era = info and info:FindFirstChild("Era")
+	if not era then
 		return nil
 	end
 
-	local pick = vs:FindFirstChild(wt_car_now)
-	if pick and pick:IsA("Model") then
-		return pick
+	if era:IsA("StringValue") and era.Value ~= "" then
+		return era.Value
+	end
+	if era:IsA("IntValue") or era:IsA("NumberValue") then
+		return tostring(era.Value)
 	end
 
 	return nil
@@ -398,6 +773,33 @@ local function get_rt_num(key)
 	return nil
 end
 
+local function get_wt_tyre(car_name, tyre_name)
+	if not wt_root then
+		return nil
+	end
+
+	local car = wt_root:FindFirstChild(car_name or wt_car_now)
+	if not car or not car:IsA("Folder") then
+		return nil
+	end
+
+	local tyre = car:FindFirstChild(tyre_name or wt_tyre_now)
+	if tyre and tyre:IsA("Folder") then
+		return tyre
+	end
+
+	return nil
+end
+
+local function get_wt_num(key, car_name, tyre_name)
+	local tyre = get_wt_tyre(car_name, tyre_name)
+	local n = tyre and tyre:FindFirstChild(key)
+	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
+		return n
+	end
+	return nil
+end
+
 local function get_rt_comp()
 	local car = get_rt_car()
 	if not car then
@@ -415,10 +817,11 @@ end
 
 local function sync_wt_car_list()
 	wt_car_vals = {}
-	local vs = ws:FindFirstChild("Vehicles")
-	if vs then
-		for _, x in ipairs(vs:GetChildren()) do
+	if wt_root then
+		for _, x in ipairs(wt_root:GetChildren()) do
 			if x:IsA("Model") then
+				table.insert(wt_car_vals, x.Name)
+			elseif x:IsA("Folder") then
 				table.insert(wt_car_vals, x.Name)
 			end
 		end
@@ -438,11 +841,71 @@ local function sync_wt_car_list()
 end
 
 local function sync_wt_tyre_list()
-	wt_tyre_now = get_rt_comp()
-	wt_tyre_vals = { wt_tyre_now }
+	local car = wt_root and wt_root:FindFirstChild(wt_car_now)
+	wt_tyre_vals = {}
+	if car and car:IsA("Folder") then
+		for _, x in ipairs(car:GetChildren()) do
+			if x:IsA("Folder") then
+				table.insert(wt_tyre_vals, x.Name)
+			end
+		end
+	end
+	table.sort(wt_tyre_vals)
+	if #wt_tyre_vals == 0 then
+		wt_tyre_vals = { "---" }
+	end
+
+	if not table.find(wt_tyre_vals, wt_tyre_now) then
+		wt_tyre_now = wt_tyre_vals[1]
+	end
 
 	call_ctrl(wt_tyre, "SetValues", wt_tyre_vals)
 	call_ctrl(wt_tyre, "SetValue", wt_tyre_now)
+end
+
+local wt_mem = {}
+local rt_last_era = nil
+local rt_last_comp = nil
+
+local function get_mem(car_name, tyre_name)
+	wt_mem[car_name] = wt_mem[car_name] or {}
+	wt_mem[car_name][tyre_name] = wt_mem[car_name][tyre_name] or {}
+	return wt_mem[car_name][tyre_name]
+end
+
+local function same_rt_sel()
+	local era = get_rt_era()
+	local comp = get_rt_comp()
+	return era == wt_car_now and comp == wt_tyre_now
+end
+
+local function apply_mem_rt()
+	local era = get_rt_era()
+	local comp = get_rt_comp()
+	if not era or not comp or comp == "---" then
+		rt_last_era = nil
+		rt_last_comp = nil
+		return
+	end
+
+	if rt_last_era == era and rt_last_comp == comp then
+		return
+	end
+	rt_last_era = era
+	rt_last_comp = comp
+
+	local mem = wt_mem[era] and wt_mem[era][comp]
+	if not mem then
+		return
+	end
+
+	for _, def in ipairs(wt_defs) do
+		local v = mem[def.key]
+		local rt_num = get_rt_num(def.key)
+		if type(v) == "number" and rt_num then
+			rt_num.Value = math.clamp(v, def.min, def.max)
+		end
+	end
 end
 
 local function sync_wt_slider()
@@ -452,10 +915,14 @@ local function sync_wt_slider()
 	end
 
 	local v = def.min
+	local mem = wt_mem[wt_car_now] and wt_mem[wt_car_now][wt_tyre_now]
 	local rt_num = get_rt_num(def.key)
-	local num = rt_num
+	local wt_num = get_wt_num(def.key, wt_car_now, wt_tyre_now)
+	local num = same_rt_sel() and (rt_num or wt_num) or wt_num
 
-	if num then
+	if mem and type(mem[def.key]) == "number" then
+		v = math.clamp(mem[def.key], def.min, def.max)
+	elseif num then
 		v = math.clamp(num.Value, def.min, def.max)
 	end
 
@@ -488,11 +955,20 @@ bind_changed(wt_slider, function(v)
 	end
 
 	local next_v = math.clamp(v, def.min, def.max)
+	get_mem(wt_car_now, wt_tyre_now)[def.key] = next_v
 	local rt_num = get_rt_num(def.key)
 
-	if rt_num then
+	if same_rt_sel() and rt_num then
 		rt_num.Value = next_v
 	end
+end)
+
+bind_changed(wt_no_deg, function(v)
+	a_state.no_deg = v
+end)
+
+bind_changed(wt_delay, function(v)
+	a_state.deg_delay = v
 end)
 
 local a_tcs = a_box.main:AddToggle("ach_tcs_enabled", {
@@ -502,14 +978,24 @@ local a_tcs = a_box.main:AddToggle("ach_tcs_enabled", {
 
 bind_changed(a_tcs, function(v)
 	a_tune.TCSEnabled = v
+	if a_prof_key then
+		save_prof(a_prof_key)
+	end
 end)
 
 bind_changed(a_enabled, function(v)
 	a_state.enabled = v
 end)
 
-bind_changed(a_no_damage, function(v)
-	a_state.no_damage = v
+bind_changed(a_nd_fx, function(v)
+	a_state.nd_fx = v
+	if v then
+		nd_tick()
+	end
+end)
+
+bind_changed(a_nd_vis, function(v)
+	a_state.nd_vis = v
 	if v then
 		nd_tick()
 	end
@@ -519,25 +1005,63 @@ sync_slider()
 sync_wt_car_list()
 sync_wt_tyre_list()
 sync_wt_slider()
+cap_rt()
 
 task.spawn(function()
-	local wt_t = 0
-	while task.wait(0.1) do
+	local act_t = 0
+	local nd_t = 0
+	local rt_t = 0
+	local mem_t = 0
+	local deg_t = 0
+	while task.wait(0.05) do
 		if a_state.enabled then
-			destroy_named(lp, "ACTune")
-			destroy_named(reps:FindFirstChild("Events"), "ACTune")
+			act_t += 0.05
+			if act_t >= 0.25 then
+				act_t = 0
+				destroy_named(lp, "ACTune")
+				destroy_named(reps:FindFirstChild("Events"), "ACTune")
+			end
+		else
+			act_t = 0
 		end
 
-		if a_state.no_damage then
-			nd_tick()
+		if a_state.nd_fx or a_state.nd_vis then
+			nd_t += 0.05
+			if nd_t >= 0.2 then
+				nd_t = 0
+				nd_tick()
+			end
+		else
+			nd_t = 0
 		end
 
-		wt_t += 0.1
-		if wt_t >= 0.5 then
-			wt_t = 0
-			sync_wt_car_list()
-			sync_wt_tyre_list()
-			sync_wt_slider()
+		if a_state.force_drs or a_state.df_lock then
+			rt_t += 0.05
+			if rt_t >= 0.15 then
+				rt_t = 0
+				rt_tick()
+			end
+		else
+			rt_t = 0
+		end
+
+		mem_t += 0.05
+		if mem_t >= 0.3 then
+			mem_t = 0
+			apply_mem_rt()
+		end
+
+		if a_state.no_deg then
+			deg_t += 0.05
+			if deg_t >= a_state.deg_delay then
+				deg_t = 0
+				local car = get_ui_car()
+				if car then
+					refresh_tyres(car)
+				end
+			end
+		else
+			deg_t = 0
 		end
 	end
 end)
@@ -614,8 +1138,21 @@ local g_main_gravity = g_box.main:AddSlider("grav_main_base", {
 	Rounding = 1,
 })
 
+g_state.base_fine = 0
+local g_main_fine = g_box.main:AddSlider("grav_main_fine", {
+	Text = "Fine Adjust",
+	Default = 0,
+	Min = -10,
+	Max = 10,
+	Rounding = 2,
+})
+
 bind_changed(g_main_gravity, function(v)
 	g_state.base_grav = v
+end)
+
+bind_changed(g_main_fine, function(v)
+	g_state.base_fine = v
 end)
 
 bind_changed(g_main_enabled, function(v)
@@ -866,7 +1403,7 @@ local g_hook_getters = {
 		return og_grav
 	end,
 	["Base Gravity"] = function()
-		return g_state.base_grav
+		return math.clamp(g_state.base_grav + g_state.base_fine, 1, 1000)
 	end,
 	["Target Gravity"] = function()
 		return g_state.target_grav
@@ -917,6 +1454,18 @@ bind_changed(g_hook_enabled, function(v)
 end)
 
 run_service.Heartbeat:Connect(function(dt)
+	local key = car_key(get_ui_car())
+	if key ~= a_prof_key then
+		if a_prof_key then
+			save_prof(a_prof_key)
+		end
+		a_prof_key = key
+		if key and not load_prof(key) then
+			save_prof(key)
+		end
+		sync_slider()
+	end
+
 	local speed = read_speed()
 	g_state.speed_delta = speed - g_state.speed
 	g_state.speed = speed
@@ -924,13 +1473,14 @@ run_service.Heartbeat:Connect(function(dt)
 	if g_main_enabled.Value then
 		local up_hit = g_state.up_enabled and eval_set(g_up_modes)
 		local down_hit = g_state.down_enabled and eval_set(g_down_modes)
-		local target = g_state.base_grav
+		local base = math.clamp(g_state.base_grav + g_state.base_fine, 1, 1000)
+		local target = base
 
 		if up_hit and not down_hit then
-			target = math.clamp(g_state.base_grav * g_state.up_mult, 1, 1000)
+			target = math.clamp(base * g_state.up_mult, 1, 1000)
 			g_state.mode = "Higher"
 		elseif down_hit and not up_hit then
-			target = math.clamp(g_state.base_grav * g_state.down_mult, 1, 1000)
+			target = math.clamp(base * g_state.down_mult, 1, 1000)
 			g_state.mode = "Lower"
 		else
 			g_state.mode = "Base"
