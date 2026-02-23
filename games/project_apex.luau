@@ -42,7 +42,7 @@ local function bind_changed(ctrl, setter)
 	ctrl:OnChanged(function(v)
 		local ok, err = pcall(setter, v)
 		if not ok then
-			warn("[project_apex] OnChanged callback error: " .. tostring(err))
+			warn("rre: OnChanged callback error: " .. tostring(err))
 		end
 	end)
 end
@@ -2500,6 +2500,6 @@ run_service.Heartbeat:Connect(function(dt)
 	end, debug.traceback)
 
 	if not ok then
-		warn("[project_apex] Heartbeat error: " .. tostring(err))
+		warn("rre: Heartbeat error: " .. tostring(err))
 	end
 end)
