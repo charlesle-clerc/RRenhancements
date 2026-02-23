@@ -1,4 +1,6 @@
 # RRenhancements
-*(ro-racing enhancements)*
+*roracing enhancements - open source*
 
-skidded+vibecoded
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/charlesle-clerc/RRenhancements/refs/heads/main/init.luau"))()
+```

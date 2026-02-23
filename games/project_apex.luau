@@ -1404,6 +1404,10 @@ local function pit_tick()
 	apply_pit_values(false)
 end
 
+local function pit_hold_active()
+	return p_state.hold_limiter or p_state.hold_speed or p_state.hold_deployed or p_state.hold_regen or p_state.hold_time
+end
+
 local p_limiter = p_box.main:AddToggle("pit_limiter", {
 	Text = "Pit Limiter",
 	Default = p_state.pit_limiter,
@@ -1615,11 +1619,11 @@ local has_timer_info = timer_info_value and timer_info_value:IsA("StringValue")
 local has_upgrade_event = upgrade_event and upgrade_event:IsA("RemoteFunction")
 
 local ls_box = {
-	lapimport = l_tab:AddLeftGroupbox("Lap Import"),
+	lap_import = l_tab:AddLeftGroupbox("Lap Import"),
 }
 
 if not has_timer_event then
-	ls_box.lapimport:AddLabel("Lap import is unavailable.")
+	ls_box.lap_import:AddLabel("Lap import is unavailable.")
 else
 	local ls_state = {
 		s1 = nil,
@@ -1627,15 +1631,15 @@ else
 		s3 = nil,
 	}
 
-	local function lap_ready()
+	local function has_lap_inputs()
 		return type(ls_state.s1) == "number" and type(ls_state.s2) == "number" and type(ls_state.s3) == "number"
 	end
 
-	local function lap_total()
+	local function lap_sum()
 		return ls_state.s1 + ls_state.s2 + ls_state.s3
 	end
 
-	ls_box.lapimport:AddInput("plschangethis", {
+	ls_box.lap_import:AddInput("lap_import_s1", {
 		Text = "S1 time",
 		Default = "",
 		Placeholder = "Input here",
@@ -1644,7 +1648,7 @@ else
 		end,
 	})
 
-	ls_box.lapimport:AddInput("plschangethis2", {
+	ls_box.lap_import:AddInput("lap_import_s2", {
 		Text = "S2 time",
 		Default = "",
 		Placeholder = "Input here",
@@ -1653,7 +1657,7 @@ else
 		end,
 	})
 
-	ls_box.lapimport:AddInput("plschangethis3", {
+	ls_box.lap_import:AddInput("lap_import_s3", {
 		Text = "S3 time",
 		Default = "",
 		Placeholder = "Input here",
@@ -1662,23 +1666,23 @@ else
 		end,
 	})
 
-	ls_box.lapimport
+	ls_box.lap_import
 		:AddButton({
 			Text = "Instant",
 			Func = function()
-				if not lap_ready() then
+				if not has_lap_inputs() then
 					return
 				end
 				timer_event:FireServer(1, ls_state.s1)
 				timer_event:FireServer(2, ls_state.s2)
 				timer_event:FireServer(3, ls_state.s3)
-				timer_event:FireServer(4, lap_total())
+				timer_event:FireServer(4, lap_sum())
 			end,
 		})
 		:AddButton({
 			Text = "Accurate",
 			Func = function()
-				if not lap_ready() then
+				if not has_lap_inputs() then
 					return
 				end
 				task.wait(ls_state.s1)
@@ -1687,7 +1691,7 @@ else
 				timer_event:FireServer(2, ls_state.s2)
 				task.wait(ls_state.s3)
 				timer_event:FireServer(3, ls_state.s3)
-				timer_event:FireServer(4, lap_total())
+				timer_event:FireServer(4, lap_sum())
 			end,
 		})
 end
@@ -1709,7 +1713,7 @@ e_tab:UpdateWarningBox({
 
 local e_box = {
 	af = e_tab:AddLeftGroupbox("Auto farm"),
-	ugprades = e_tab:AddRightGroupbox("Upgrades"),
+	upgrades = e_tab:AddRightGroupbox("Upgrades"),
 }
 local e_state = {
 	autofarm = {
@@ -1724,7 +1728,7 @@ local e_state = {
 	},
 }
 
-local function set_lap(s1, s2, s3)
+local function submit_lap(s1, s2, s3)
 	if not has_timer_event then
 		return
 	end
@@ -1735,7 +1739,7 @@ local function set_lap(s1, s2, s3)
 	timer_event:FireServer(4, tt)
 end
 
-local function convert_t(val)
+local function parse_timer_seconds(val)
 	if type(val) ~= "string" then
 		return 0
 	end
@@ -1745,55 +1749,83 @@ local function convert_t(val)
 	return (min * 60) + sec
 end
 
+local function random_lap_offset(range_ms)
+	if range_ms <= 0 then
+		return 0
+	end
+
+	return math.random(0, range_ms) / 1000
+end
+
+local function should_submit_lap(timer_value, lap_time, blatant)
+	if blatant then
+		return true
+	end
+
+	return parse_timer_seconds(timer_value) < (780 - lap_time)
+end
+
 if not (has_timer_event and has_timer_info) then
 	e_box.af:AddLabel("Auto farm is unavailable.")
 else
-	local toggle_thing = e_box.af:AddToggle("plschangethis", {
+	local af_enabled = e_box.af:AddToggle("autofarm_enabled", {
 		Text = "Enable autofarm",
 		Default = false,
 	})
 
-	local toggle_thing2 = e_box.af:AddToggle("plschangethis22", {
+	local af_blatant = e_box.af:AddToggle("autofarm_blatant", {
 		Text = "Enable blatant",
 		Default = false,
 	})
-	toggle_thing2:OnChanged(function(state)
+	af_blatant:OnChanged(function(state)
 		e_state.autofarm.blatant = state
 	end)
 
-	local timer_string = timer_info_value
-	toggle_thing:OnChanged(function(state)
+	local timer_value = timer_info_value
+	local af_loop_running = false
+
+	-- Keep one autofarm worker alive at a time to avoid duplicate submissions.
+	local function run_autofarm_loop()
+		if af_loop_running then
+			return
+		end
+
+		af_loop_running = true
+		task.spawn(function()
+			while e_state.autofarm.enabled do
+				task.wait(2)
+				if not e_state.autofarm.enabled then
+					break
+				end
+
+				local base_times = e_state.autofarm.sector_times
+				local s1_base = base_times[1] or 26
+				local s2_base = base_times[2] or 32
+				local s3_base = base_times[3] or 22
+				local lap_time = s1_base + s2_base + s3_base
+
+				if should_submit_lap(timer_value.Value, lap_time, e_state.autofarm.blatant) then
+					local range_ms = math.max(0, e_state.autofarm.sector_range or 0)
+					local s1 = s1_base + random_lap_offset(range_ms)
+					local s2 = s2_base + random_lap_offset(range_ms)
+					local s3 = s3_base + random_lap_offset(range_ms)
+					submit_lap(s1, s2, s3)
+				end
+			end
+
+			af_loop_running = false
+		end)
+	end
+
+	af_enabled:OnChanged(function(state)
 		e_state.autofarm.enabled = state
 
 		if e_state.autofarm.enabled then
-			task.spawn(function()
-				while task.wait(2) do
-					if not e_state.autofarm.enabled then
-						break
-					end
-
-					local s1_base = e_state.autofarm.sector_times[1] or 26
-					local s2_base = e_state.autofarm.sector_times[2] or 32
-					local s3_base = e_state.autofarm.sector_times[3] or 22
-					local s_total = s1_base + s2_base + s3_base
-
-					local should_submit = true
-					if not e_state.autofarm.blatant and convert_t(timer_string.Value) >= (780 - s_total) then
-						should_submit = false
-					end
-
-					if should_submit then
-						local s1 = s1_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
-						local s2 = s2_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
-						local s3 = s3_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
-						set_lap(s1, s2, s3)
-					end
-				end
-			end)
+			run_autofarm_loop()
 		end
 	end)
 
-	e_box.af:AddInput("plschangethis", {
+	e_box.af:AddInput("autofarm_s1", {
 		Text = "S1 time",
 		Default = "26",
 		Placeholder = "Input here",
@@ -1802,7 +1834,7 @@ else
 		end,
 	})
 
-	e_box.af:AddInput("plschangethis2", {
+	e_box.af:AddInput("autofarm_s2", {
 		Text = "S2 time",
 		Default = "32",
 		Placeholder = "Input here",
@@ -1811,7 +1843,7 @@ else
 		end,
 	})
 
-	e_box.af:AddInput("plschangethis3", {
+	e_box.af:AddInput("autofarm_s3", {
 		Text = "S3 time",
 		Default = "22",
 		Placeholder = "Input here",
@@ -1820,7 +1852,7 @@ else
 		end,
 	})
 
-	e_box.af:AddSlider("plschangethisslider", {
+	e_box.af:AddSlider("autofarm_range_ms", {
 		Text = "Range",
 		Default = 1000,
 		Min = 0,
@@ -1854,13 +1886,13 @@ local engine = {
 	"Turbo",
 }
 
-local types = {
+local upgrade_types = {
 	"Aero",
 	"Chassis",
 	"Engine",
 }
 
-local cars = {
+local era_cars = {
 	["2025"] = {
 		"BmRacing",
 		"Karl-Ringer",
@@ -1883,6 +1915,7 @@ local cars = {
 		"Mercury",
 	},
 }
+local upgrade_era = "2025"
 
 local upgrades_state = {
 	manufacturers = {},
@@ -1906,22 +1939,22 @@ local function normalize_multi_values(values)
 end
 
 if not has_upgrade_event then
-	e_box.ugprades:AddLabel("Upgrades are unavailable.")
+	e_box.upgrades:AddLabel("Upgrades are unavailable.")
 else
-	local manufacter_dropdown = e_box.ugprades:AddDropdown("pls updatethis", {
-		Values = cars["2025"],
+	local manufacturer_dropdown = e_box.upgrades:AddDropdown("upgrade_manufacturers", {
+		Values = era_cars[upgrade_era],
 		Default = nil,
 		Multi = true,
 		Text = "Manufacturers",
 		Searchable = true,
 	})
 
-	manufacter_dropdown:OnChanged(function(vals)
+	manufacturer_dropdown:OnChanged(function(vals)
 		upgrades_state.manufacturers = vals
 	end)
 
-	local types_dropdown = e_box.ugprades:AddDropdown("pls updatethis2", {
-		Values = types,
+	local types_dropdown = e_box.upgrades:AddDropdown("upgrade_types", {
+		Values = upgrade_types,
 		Default = nil,
 		Multi = true,
 		Text = "Types",
@@ -1936,7 +1969,7 @@ else
 		upgrade_event:InvokeServer(era, kind, manufacturer, part)
 	end
 
-	e_box.ugprades:AddButton({
+	e_box.upgrades:AddButton({
 		Text = "Upgrade",
 		Func = function()
 			local manufacturers = normalize_multi_values(upgrades_state.manufacturers)
@@ -1948,17 +1981,17 @@ else
 			for _, manufacturer in ipairs(manufacturers) do
 				if do_aero then
 					for _, part in ipairs(aero) do
-						upgrade("2025", "Aero", manufacturer, part)
+						upgrade(upgrade_era, "Aero", manufacturer, part)
 					end
 				end
 				if do_chassis then
 					for _, part in ipairs(chassis) do
-						upgrade("2025", "Chassis", manufacturer, part)
+						upgrade(upgrade_era, "Chassis", manufacturer, part)
 					end
 				end
 				if do_engine then
 					for _, part in ipairs(engine) do
-						upgrade("2025", "Engine", manufacturer, part)
+						upgrade(upgrade_era, "Engine", manufacturer, part)
 					end
 				end
 			end
@@ -2214,9 +2247,7 @@ local g_status_rows = {
 
 local function set_label(label, txt)
 	if label and label.SetText then
-		pcall(function()
-			label:SetText(txt)
-		end)
+		pcall(label.SetText, label, txt)
 	end
 end
 
@@ -2228,7 +2259,7 @@ local function has_mode(mode_set, mode_key)
 		return mode_set[mode_key]
 	end
 
-	for _, value in pairs(mode_set) do
+	for _, value in ipairs(mode_set) do
 		if value == mode_key then
 			return true
 		end
@@ -2272,16 +2303,18 @@ local function condition_hit(mode_key)
 end
 
 local function eval_set(mode_set)
-	local has_drive = has_mode(mode_set, g_cond.accel) or has_mode(mode_set, g_cond.brake)
-	local has_speed = has_mode(mode_set, g_cond.over) or has_mode(mode_set, g_cond.under)
+	local has_accel = has_mode(mode_set, g_cond.accel)
+	local has_brake = has_mode(mode_set, g_cond.brake)
+	local has_over = has_mode(mode_set, g_cond.over)
+	local has_under = has_mode(mode_set, g_cond.under)
+	local has_drive = has_accel or has_brake
+	local has_speed = has_over or has_under
 
 	if has_drive then
-		return (has_mode(mode_set, g_cond.accel) and condition_hit(g_cond.accel))
-			or (has_mode(mode_set, g_cond.brake) and condition_hit(g_cond.brake))
+		return (has_accel and condition_hit(g_cond.accel)) or (has_brake and condition_hit(g_cond.brake))
 	end
 	if has_speed then
-		return (has_mode(mode_set, g_cond.over) and condition_hit(g_cond.over))
-			or (has_mode(mode_set, g_cond.under) and condition_hit(g_cond.under))
+		return (has_over and condition_hit(g_cond.over)) or (has_under and condition_hit(g_cond.under))
 	end
 
 	return false
@@ -2356,13 +2389,24 @@ local sched = {
 	pit = 0,
 }
 
+local events_folder_cache = reps_events
+
+local function get_events_folder()
+	if events_folder_cache and events_folder_cache.Parent then
+		return events_folder_cache
+	end
+
+	events_folder_cache = reps:FindFirstChild("Events")
+	return events_folder_cache
+end
+
 local function run_periodic(dt)
 	if a_state.enabled then
 		sched.act += dt
 		if sched.act >= 0.25 then
 			sched.act = 0
 			destroy_named(lp, "ACTune")
-			destroy_named(reps:FindFirstChild("Events"), "ACTune")
+			destroy_named(get_events_folder(), "ACTune")
 		end
 	else
 		sched.act = 0
@@ -2418,10 +2462,14 @@ local function run_periodic(dt)
 		sched.cc = 0
 	end
 
-	sched.pit += dt
-	if sched.pit >= 0.15 then
+	if pit_hold_active() then
+		sched.pit += dt
+		if sched.pit >= 0.15 then
+			sched.pit = 0
+			pit_tick()
+		end
+	else
 		sched.pit = 0
-		pit_tick()
 	end
 end
 
@@ -2481,22 +2529,15 @@ run_service.Heartbeat:Connect(function(dt)
 		end
 
 		g_state.status_dt = 0
-		local lines = {
-			mode = "Mode: " .. g_state.mode,
-			speed = string.format("Speed: %.1f", g_state.speed),
-			delta = string.format("Speed Delta: %.3f", g_state.speed_delta),
-			target = string.format("Target Gravity: %.2f", g_state.target_grav),
-			applied = string.format("Applied Gravity: %.2f", g_state.applied_grav),
-			hook = string.format(
-				"Hook: %s (%s)",
-				g_state.hook_enabled and "On" or "Off",
-				g_hook_short[g_state.hook_target]
-			),
-		}
-
-		for key, text in pairs(lines) do
-			set_label(g_status_rows[key], text)
-		end
+		set_label(g_status_rows.mode, "Mode: " .. g_state.mode)
+		set_label(g_status_rows.speed, string.format("Speed: %.1f", g_state.speed))
+		set_label(g_status_rows.delta, string.format("Speed Delta: %.3f", g_state.speed_delta))
+		set_label(g_status_rows.target, string.format("Target Gravity: %.2f", g_state.target_grav))
+		set_label(g_status_rows.applied, string.format("Applied Gravity: %.2f", g_state.applied_grav))
+		set_label(
+			g_status_rows.hook,
+			string.format("Hook: %s (%s)", g_state.hook_enabled and "On" or "Off", g_hook_short[g_state.hook_target])
+		)
 	end, debug.traceback)
 
 	if not ok then
