@@ -1220,7 +1220,7 @@ local function apply_corner_cut_part(part)
 		return
 	end
 
-	if not c_state.enabled then
+	if c_state.enabled then
 		restore_cc_original(part)
 		return
 	end
@@ -2453,7 +2453,7 @@ local function run_periodic(dt)
 		sched.deg = 0
 	end
 
-	if c_state.enabled or c_state.dirty then
+	if (not c_state.enabled) or c_state.dirty then
 		sched.cc += dt
 		if c_state.dirty or sched.cc >= 0.5 then
 			sched.cc = 0
