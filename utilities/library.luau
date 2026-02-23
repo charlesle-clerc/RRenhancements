@@ -79,11 +79,7 @@ local function get_build_date(game_file)
 		return utc_today()
 	end
 
-	local iso = data
-		and data[1]
-		and data[1].commit
-		and data[1].commit.author
-		and data[1].commit.author.date
+	local iso = data and data[1] and data[1].commit and data[1].commit.author and data[1].commit.author.date
 
 	if type(iso) ~= "string" then
 		return utc_today()
@@ -100,19 +96,17 @@ local function get_build_date(game_file)
 end
 
 local function get_logo(ui_lib, opts)
-	local ok_add, add_err = pcall(
-		ui_lib.ImageManager.AddAsset,
-		ui_lib.ImageManager,
-		opts.logo_name,
-		opts.logo_fallback_id,
-		REPO_BASE .. "utilities/assets/white_logo.png"
-	)
+	local ok_add, add_err = pcall(function()
+		ui_lib.ImageManager.AddAsset(opts.logo_name, opts.logo_fallback_id, REPO_BASE .. "utilities/assets/white_logo.png")
+	end)
 
 	if not ok_add and not tostring(add_err):find("already exists", 1, true) then
 		warn("rre: logo asset add failed: " .. tostring(add_err))
 	end
 
-	local ok_get, icon = pcall(ui_lib.ImageManager.GetAsset, ui_lib.ImageManager, opts.logo_name)
+	local ok_get, icon = pcall(function()
+		return ui_lib.ImageManager.GetAsset(opts.logo_name)
+	end)
 	if ok_get and type(icon) == "string" and icon ~= "" then
 		return icon
 	end

@@ -1404,10 +1404,6 @@ local function pit_tick()
 	apply_pit_values(false)
 end
 
-local function pit_hold_active()
-	return p_state.hold_limiter or p_state.hold_speed or p_state.hold_deployed or p_state.hold_regen or p_state.hold_time
-end
-
 local p_limiter = p_box.main:AddToggle("pit_limiter", {
 	Text = "Pit Limiter",
 	Default = p_state.pit_limiter,
@@ -1749,22 +1745,6 @@ local function parse_timer_seconds(val)
 	return (min * 60) + sec
 end
 
-local function random_lap_offset(range_ms)
-	if range_ms <= 0 then
-		return 0
-	end
-
-	return math.random(0, range_ms) / 1000
-end
-
-local function should_submit_lap(timer_value, lap_time, blatant)
-	if blatant then
-		return true
-	end
-
-	return parse_timer_seconds(timer_value) < (780 - lap_time)
-end
-
 if not (has_timer_event and has_timer_info) then
 	e_box.af:AddLabel("Auto farm is unavailable.")
 else
@@ -1782,46 +1762,35 @@ else
 	end)
 
 	local timer_value = timer_info_value
-	local af_loop_running = false
-
-	-- Keep one autofarm worker alive at a time to avoid duplicate submissions.
-	local function run_autofarm_loop()
-		if af_loop_running then
-			return
-		end
-
-		af_loop_running = true
-		task.spawn(function()
-			while e_state.autofarm.enabled do
-				task.wait(2)
-				if not e_state.autofarm.enabled then
-					break
-				end
-
-				local base_times = e_state.autofarm.sector_times
-				local s1_base = base_times[1] or 26
-				local s2_base = base_times[2] or 32
-				local s3_base = base_times[3] or 22
-				local lap_time = s1_base + s2_base + s3_base
-
-				if should_submit_lap(timer_value.Value, lap_time, e_state.autofarm.blatant) then
-					local range_ms = math.max(0, e_state.autofarm.sector_range or 0)
-					local s1 = s1_base + random_lap_offset(range_ms)
-					local s2 = s2_base + random_lap_offset(range_ms)
-					local s3 = s3_base + random_lap_offset(range_ms)
-					submit_lap(s1, s2, s3)
-				end
-			end
-
-			af_loop_running = false
-		end)
-	end
 
 	af_enabled:OnChanged(function(state)
 		e_state.autofarm.enabled = state
 
 		if e_state.autofarm.enabled then
-			run_autofarm_loop()
+			task.spawn(function()
+				while task.wait(2) do
+					if not e_state.autofarm.enabled then
+						break
+					end
+
+					local s1_base = e_state.autofarm.sector_times[1] or 26
+					local s2_base = e_state.autofarm.sector_times[2] or 32
+					local s3_base = e_state.autofarm.sector_times[3] or 22
+					local s_total = s1_base + s2_base + s3_base
+
+					local should_submit = true
+					if not e_state.autofarm.blatant and parse_timer_seconds(timer_value.Value) >= (780 - s_total) then
+						should_submit = false
+					end
+
+					if should_submit then
+						local s1 = s1_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						local s2 = s2_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						local s3 = s3_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						submit_lap(s1, s2, s3)
+					end
+				end
+			end)
 		end
 	end)
 
@@ -2259,7 +2228,7 @@ local function has_mode(mode_set, mode_key)
 		return mode_set[mode_key]
 	end
 
-	for _, value in ipairs(mode_set) do
+	for _, value in pairs(mode_set) do
 		if value == mode_key then
 			return true
 		end
@@ -2389,24 +2358,13 @@ local sched = {
 	pit = 0,
 }
 
-local events_folder_cache = reps_events
-
-local function get_events_folder()
-	if events_folder_cache and events_folder_cache.Parent then
-		return events_folder_cache
-	end
-
-	events_folder_cache = reps:FindFirstChild("Events")
-	return events_folder_cache
-end
-
 local function run_periodic(dt)
 	if a_state.enabled then
 		sched.act += dt
 		if sched.act >= 0.25 then
 			sched.act = 0
 			destroy_named(lp, "ACTune")
-			destroy_named(get_events_folder(), "ACTune")
+			destroy_named(reps:FindFirstChild("Events"), "ACTune")
 		end
 	else
 		sched.act = 0
@@ -2462,14 +2420,10 @@ local function run_periodic(dt)
 		sched.cc = 0
 	end
 
-	if pit_hold_active() then
-		sched.pit += dt
-		if sched.pit >= 0.15 then
-			sched.pit = 0
-			pit_tick()
-		end
-	else
+	sched.pit += dt
+	if sched.pit >= 0.15 then
 		sched.pit = 0
+		pit_tick()
 	end
 end
 
