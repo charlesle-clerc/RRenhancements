@@ -73,8 +73,6 @@ local a_state = {
 	nd_vis = false,
 	no_deg = false,
 	deg_delay = 4,
-	fine = false,
-	fine_step = 0.1,
 	force_drs = false,
 	df_lock = false,
 	df_f = 545,
@@ -520,17 +518,24 @@ local a_value = a_box.main:AddSlider("ach_value", {
 
 local a_info = a_box.main:AddLabel("")
 
-local a_fine = a_box.main:AddToggle("ach_fine_on", {
-	Text = "Fine Step Mode",
-	Default = false,
-})
+a_box.main:AddInput("ach_value_input", {
+	Text = "Set Value",
+	Default = "",
+	Placeholder = "Exact value for selected key",
+	Callback = function(value)
+		local def = a_def_by_name[a_pick_name]
+		local n = tonumber(value)
+		if not def or not n then
+			return
+		end
 
-local a_fine_step = a_box.main:AddSlider("ach_fine_step", {
-	Text = "Fine Step",
-	Default = a_state.fine_step,
-	Min = 0.01,
-	Max = 5,
-	Rounding = 2,
+		local next_v = clamp_def(def, n)
+		a_tune[def.key] = next_v
+		call_ctrl(a_value, "SetValue", next_v)
+		if a_prof_key then
+			save_prof(a_prof_key)
+		end
+	end,
 })
 
 local function sync_slider()
@@ -553,13 +558,6 @@ local function sync_slider()
 	end
 end
 
-local function step_round(v, s)
-	if s <= 0 then
-		return v
-	end
-	return math.floor((v / s) + 0.5) * s
-end
-
 bind_changed(a_pick, function(v)
 	a_pick_name = v
 	sync_slider()
@@ -572,11 +570,6 @@ bind_changed(a_value, function(v)
 	end
 
 	local next_v = clamp_def(def, v)
-	if a_state.fine then
-		local min_step = 10 ^ (-def.round)
-		local step = math.max(a_state.fine_step, min_step)
-		next_v = clamp_def(def, step_round(next_v, step))
-	end
 	a_tune[def.key] = next_v
 	if next_v ~= v then
 		call_ctrl(a_value, "SetValue", next_v)
@@ -585,14 +578,6 @@ bind_changed(a_value, function(v)
 	if a_prof_key then
 		save_prof(a_prof_key)
 	end
-end)
-
-bind_changed(a_fine, function(v)
-	a_state.fine = v
-end)
-
-bind_changed(a_fine_step, function(v)
-	a_state.fine_step = math.max(0.01, v)
 end)
 
 bind_many({
@@ -1138,21 +1123,24 @@ local g_main_gravity = g_box.main:AddSlider("grav_main_base", {
 	Rounding = 1,
 })
 
-g_state.base_fine = 0
-local g_main_fine = g_box.main:AddSlider("grav_main_fine", {
-	Text = "Fine Adjust",
-	Default = 0,
-	Min = -10,
-	Max = 10,
-	Rounding = 2,
+g_box.main:AddInput("grav_main_input", {
+	Text = "Set Gravity",
+	Default = "",
+	Placeholder = "1 - 1000",
+	Callback = function(value)
+		local n = tonumber(value)
+		if not n then
+			return
+		end
+
+		n = math.clamp(n, 1, 1000)
+		g_state.base_grav = n
+		call_ctrl(g_main_gravity, "SetValue", n)
+	end,
 })
 
 bind_changed(g_main_gravity, function(v)
 	g_state.base_grav = v
-end)
-
-bind_changed(g_main_fine, function(v)
-	g_state.base_fine = v
 end)
 
 bind_changed(g_main_enabled, function(v)
@@ -1403,7 +1391,7 @@ local g_hook_getters = {
 		return og_grav
 	end,
 	["Base Gravity"] = function()
-		return math.clamp(g_state.base_grav + g_state.base_fine, 1, 1000)
+		return g_state.base_grav
 	end,
 	["Target Gravity"] = function()
 		return g_state.target_grav
@@ -1473,7 +1461,7 @@ run_service.Heartbeat:Connect(function(dt)
 	if g_main_enabled.Value then
 		local up_hit = g_state.up_enabled and eval_set(g_up_modes)
 		local down_hit = g_state.down_enabled and eval_set(g_down_modes)
-		local base = math.clamp(g_state.base_grav + g_state.base_fine, 1, 1000)
+		local base = g_state.base_grav
 		local target = base
 
 		if up_hit and not down_hit then
