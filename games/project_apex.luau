@@ -13,6 +13,7 @@ local app = create({
 		{ id = "grav", name = "Gravity" },
 		{ id = "a_chassis", name = "A-Chassis" },
 		{ id = "corner_cuts", name = "Corner Cuts" },
+		{ id = "pit_system", name = "Pit System" },
 		{ id = "ui_settings", name = "UI & Info" },
 	},
 })
@@ -20,6 +21,7 @@ local app = create({
 local grav = app.tabs.grav
 local a_tab = app.tabs.a_chassis
 local c_tab = app.tabs.corner_cuts
+local p_tab = app.tabs.pit_system
 
 local players = game:GetService("Players")
 local reps = game:GetService("ReplicatedStorage")
@@ -65,6 +67,7 @@ end
 local a_box = {
 	main = a_tab:AddLeftGroupbox("Tune"),
 	rt = a_tab:AddLeftGroupbox("Runtime"),
+	drs = a_tab:AddRightGroupbox("DRS"),
 	no_dmg = a_tab:AddRightGroupbox("No Damage"),
 	tyres = a_tab:AddRightGroupbox("Tyres"),
 }
@@ -80,6 +83,8 @@ local a_state = {
 	df_f = 545,
 	df_r = 670,
 	df_drag = 66.1,
+	global_drs_lock = false,
+	global_drs = false,
 }
 
 local a_tune = {
@@ -325,7 +330,23 @@ local function nd_tick()
 	end
 end
 
+local function get_global_drs_value()
+	local values = reps:FindFirstChild("Values")
+	local drs = values and values:FindFirstChild("DRS")
+	if drs and drs:IsA("BoolValue") then
+		return drs
+	end
+	return nil
+end
+
 local function rt_tick()
+	if a_state.global_drs_lock then
+		local gdrs = get_global_drs_value()
+		if gdrs then
+			gdrs.Value = a_state.global_drs
+		end
+	end
+
 	local car = get_ui_car()
 	local info = car and car:FindFirstChild("Information") or nil
 	if not info then
@@ -419,9 +440,32 @@ local function cap_rt()
 	end
 end
 
-local rt_drs = a_box.rt:AddToggle("ach_rt_drs", {
+local rt_drs = a_box.drs:AddToggle("ach_rt_drs", {
 	Text = "Force DRS",
 	Default = false,
+})
+
+local a_global_drs_lock = a_box.drs:AddToggle("ach_global_drs_lock", {
+	Text = "Global DRS Lock",
+	Default = a_state.global_drs_lock,
+})
+
+local a_global_drs = a_box.drs:AddToggle("ach_global_drs", {
+	Text = "Global DRS Enabled",
+	Default = a_state.global_drs,
+})
+
+a_box.drs:AddButton({
+	Text = "Read Global DRS",
+	Func = function()
+		local gdrs = get_global_drs_value()
+		if gdrs then
+			a_state.global_drs = gdrs.Value
+			if a_global_drs and a_global_drs.SetValue then
+				pcall(a_global_drs.SetValue, a_global_drs, a_state.global_drs)
+			end
+		end
+	end,
 })
 
 local rt_df_on = a_box.rt:AddToggle("ach_rt_df_on", {
@@ -587,6 +631,20 @@ bind_many({
 		ctrl = rt_drs,
 		set = function(v)
 			a_state.force_drs = v
+		end,
+	},
+	{
+		ctrl = a_global_drs_lock,
+		set = function(v)
+			a_state.global_drs_lock = v
+			rt_tick()
+		end,
+	},
+	{
+		ctrl = a_global_drs,
+		set = function(v)
+			a_state.global_drs = v
+			rt_tick()
 		end,
 	},
 	{
@@ -993,6 +1051,13 @@ sync_wt_car_list()
 sync_wt_tyre_list()
 sync_wt_slider()
 cap_rt()
+do
+	local gdrs = get_global_drs_value()
+	if gdrs then
+		a_state.global_drs = gdrs.Value
+		call_ctrl(a_global_drs, "SetValue", a_state.global_drs)
+	end
+end
 
 task.spawn(function()
 	local act_t = 0
@@ -1022,7 +1087,7 @@ task.spawn(function()
 			nd_t = 0
 		end
 
-		if a_state.force_drs or a_state.df_lock then
+		if a_state.force_drs or a_state.df_lock or a_state.global_drs_lock then
 			rt_t += 0.05
 			if rt_t >= 0.15 then
 				rt_t = 0
@@ -1073,12 +1138,13 @@ local c_box = {
 }
 
 local c_state = {
-	enabled = true,
+	enabled = false,
 	visible = false,
 	transparency = 0.4,
 	shrink_x = 0,
 	shrink_y = 0,
 	shrink_z = 0,
+	wall_collidable = true,
 	dirty = true,
 }
 
@@ -1128,10 +1194,14 @@ local function apply_corner_cut_part(part)
 		return
 	end
 
-	local touch_on = c_state.enabled
-	part.CanTouch = touch_on
-	part.CanQuery = touch_on
-	part.CanCollide = orig.can_collide
+	if not c_state.enabled then
+		restore_cc_original(part)
+		return
+	end
+
+	part.CanTouch = false
+	part.CanQuery = false
+	part.CanCollide = c_state.wall_collidable
 
 	local sub = Vector3.new(c_state.shrink_x * 2, c_state.shrink_y * 2, c_state.shrink_z * 2)
 	part.Size = Vector3.new(
@@ -1208,15 +1278,9 @@ local c_shrink_z = c_box.tune:AddSlider("cc_shrink_z", {
 	Rounding = 2,
 })
 
-c_box.tune:AddButton({
-	Text = "Restore Original",
-	Func = function()
-		for part in pairs(c_orig) do
-			if part and part.Parent then
-				restore_cc_original(part)
-			end
-		end
-	end,
+local c_wall_collidable = c_box.tune:AddToggle("cc_wall_collidable", {
+	Text = "Wall Collidable",
+	Default = c_state.wall_collidable,
 })
 
 bind_many({
@@ -1262,6 +1326,13 @@ bind_many({
 			c_state.dirty = true
 		end,
 	},
+	{
+		ctrl = c_wall_collidable,
+		set = function(v)
+			c_state.wall_collidable = v
+			c_state.dirty = true
+		end,
+	},
 })
 
 task.spawn(function()
@@ -1272,6 +1343,300 @@ task.spawn(function()
 			cc_t = 0
 			apply_corner_cuts()
 			c_state.dirty = false
+		end
+	end
+end)
+
+--// =========================
+--// Pit System
+--// =========================
+local p_box = {
+	main = p_tab:AddLeftGroupbox("Pit"),
+	hold = p_tab:AddRightGroupbox("Hold"),
+}
+
+local p_state = {
+	pit_limiter = false,
+	speed_limiter = 80,
+	pit_deployed = false,
+	wheel_regen = 0,
+	pit_time = 2.5,
+	hold_limiter = false,
+	hold_speed = false,
+	hold_deployed = false,
+	hold_regen = false,
+	hold_time = false,
+}
+
+local function get_pit_info()
+	local car = get_ui_car()
+	local info = car and car:FindFirstChild("Information")
+	return info and info:FindFirstChild("PitInfo") or nil
+end
+
+local function cap_pit()
+	local pit = get_pit_info()
+	if pit then
+		local limiter = pit:FindFirstChild("PitLimiter")
+		local speed = pit:FindFirstChild("SpeedLimiter")
+		local deployed = pit:FindFirstChild("PitDeployed")
+		local regen = pit:FindFirstChild("WheelRegen")
+		local ptime = pit:FindFirstChild("PitTime")
+
+		if limiter and limiter:IsA("BoolValue") then
+			p_state.pit_limiter = limiter.Value
+		end
+		if speed and speed:IsA("NumberValue") then
+			p_state.speed_limiter = speed.Value
+		end
+		if deployed and deployed:IsA("BoolValue") then
+			p_state.pit_deployed = deployed.Value
+		end
+		if regen and regen:IsA("NumberValue") then
+			p_state.wheel_regen = regen.Value
+		end
+		if ptime and ptime:IsA("NumberValue") then
+			p_state.pit_time = ptime.Value
+		end
+	end
+end
+
+local function apply_pit_values(force)
+	local pit = get_pit_info()
+	if not pit then
+		return
+	end
+
+	local limiter = pit:FindFirstChild("PitLimiter")
+	local speed = pit:FindFirstChild("SpeedLimiter")
+	local deployed = pit:FindFirstChild("PitDeployed")
+	local regen = pit:FindFirstChild("WheelRegen")
+	local ptime = pit:FindFirstChild("PitTime")
+
+	if limiter and limiter:IsA("BoolValue") and (force or p_state.hold_limiter) then
+		limiter.Value = p_state.pit_limiter
+	end
+	if speed and speed:IsA("NumberValue") and (force or p_state.hold_speed) then
+		speed.Value = math.clamp(p_state.speed_limiter, 40, 300)
+	end
+	if deployed and deployed:IsA("BoolValue") and (force or p_state.hold_deployed) then
+		deployed.Value = p_state.pit_deployed
+	end
+	if regen and regen:IsA("NumberValue") and (force or p_state.hold_regen) then
+		regen.Value = math.clamp(p_state.wheel_regen, 0, 100)
+	end
+	if ptime and ptime:IsA("NumberValue") and (force or p_state.hold_time) then
+		ptime.Value = math.clamp(p_state.pit_time, 0, 15)
+	end
+end
+
+local function pit_tick()
+	apply_pit_values(false)
+end
+
+local p_limiter = p_box.main:AddToggle("pit_limiter", {
+	Text = "Pit Limiter",
+	Default = p_state.pit_limiter,
+})
+
+local p_speed = p_box.main:AddSlider("pit_speed", {
+	Text = "Speed Limiter",
+	Default = p_state.speed_limiter,
+	Min = 40,
+	Max = 300,
+	Rounding = 0,
+})
+
+local p_deployed = p_box.main:AddToggle("pit_deployed", {
+	Text = "Pit Deployed",
+	Default = p_state.pit_deployed,
+})
+
+local p_regen = p_box.main:AddSlider("pit_regen", {
+	Text = "Wheel Regen",
+	Default = p_state.wheel_regen,
+	Min = 0,
+	Max = 100,
+	Rounding = 0,
+})
+
+local p_time = p_box.main:AddSlider("pit_time", {
+	Text = "Pit Time (s)",
+	Default = p_state.pit_time,
+	Min = 0,
+	Max = 15,
+	Rounding = 1,
+})
+
+local p_hold_limiter = p_box.hold:AddToggle("pit_hold_limiter", {
+	Text = "Hold Pit Limiter",
+	Default = p_state.hold_limiter,
+})
+
+local p_hold_speed = p_box.hold:AddToggle("pit_hold_speed", {
+	Text = "Hold Speed",
+	Default = p_state.hold_speed,
+})
+
+local p_hold_deployed = p_box.hold:AddToggle("pit_hold_deployed", {
+	Text = "Hold Pit Deployed",
+	Default = p_state.hold_deployed,
+})
+
+local p_hold_regen = p_box.hold:AddToggle("pit_hold_regen", {
+	Text = "Hold Wheel Regen",
+	Default = p_state.hold_regen,
+})
+
+local p_hold_time = p_box.hold:AddToggle("pit_hold_time", {
+	Text = "Hold Pit Time",
+	Default = p_state.hold_time,
+})
+
+p_box.main:AddButton({
+	Text = "Apply Once",
+	Func = function()
+		apply_pit_values(true)
+	end,
+})
+
+p_box.main:AddButton({
+	Text = "Read Current Pit",
+	Func = function()
+		cap_pit()
+		call_ctrl(p_limiter, "SetValue", p_state.pit_limiter)
+		call_ctrl(p_speed, "SetValue", p_state.speed_limiter)
+		call_ctrl(p_deployed, "SetValue", p_state.pit_deployed)
+		call_ctrl(p_regen, "SetValue", p_state.wheel_regen)
+		call_ctrl(p_time, "SetValue", p_state.pit_time)
+	end,
+})
+
+local p_init_sync = false
+bind_many({
+	{
+		ctrl = p_limiter,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.pit_limiter = v
+			apply_pit_values(true)
+		end,
+	},
+	{
+		ctrl = p_speed,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.speed_limiter = v
+			apply_pit_values(true)
+		end,
+	},
+	{
+		ctrl = p_deployed,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.pit_deployed = v
+			apply_pit_values(true)
+		end,
+	},
+	{
+		ctrl = p_regen,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.wheel_regen = v
+			apply_pit_values(true)
+		end,
+	},
+	{
+		ctrl = p_time,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.pit_time = v
+			apply_pit_values(true)
+		end,
+	},
+	{
+		ctrl = p_hold_limiter,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.hold_limiter = v
+			pit_tick()
+		end,
+	},
+	{
+		ctrl = p_hold_speed,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.hold_speed = v
+			pit_tick()
+		end,
+	},
+	{
+		ctrl = p_hold_deployed,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.hold_deployed = v
+			pit_tick()
+		end,
+	},
+	{
+		ctrl = p_hold_regen,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.hold_regen = v
+			pit_tick()
+		end,
+	},
+	{
+		ctrl = p_hold_time,
+		set = function(v)
+			if p_init_sync then
+				return
+			end
+			p_state.hold_time = v
+			pit_tick()
+		end,
+	},
+})
+
+p_init_sync = true
+cap_pit()
+call_ctrl(p_limiter, "SetValue", p_state.pit_limiter)
+call_ctrl(p_speed, "SetValue", p_state.speed_limiter)
+call_ctrl(p_deployed, "SetValue", p_state.pit_deployed)
+call_ctrl(p_regen, "SetValue", p_state.wheel_regen)
+call_ctrl(p_time, "SetValue", p_state.pit_time)
+call_ctrl(p_hold_limiter, "SetValue", p_state.hold_limiter)
+call_ctrl(p_hold_speed, "SetValue", p_state.hold_speed)
+call_ctrl(p_hold_deployed, "SetValue", p_state.hold_deployed)
+call_ctrl(p_hold_regen, "SetValue", p_state.hold_regen)
+call_ctrl(p_hold_time, "SetValue", p_state.hold_time)
+p_init_sync = false
+
+task.spawn(function()
+	local p_t = 0
+	while task.wait(0.05) do
+		p_t += 0.05
+		if p_t >= 0.15 then
+			p_t = 0
+			pit_tick()
 		end
 	end
 end)
@@ -1359,8 +1724,8 @@ end)
 
 bind_changed(g_main_enabled, function(v)
 	if not v then
-		ws.Gravity = og_grav
-		g_state.smooth_grav = og_grav
+		ws.Gravity = og_grav_real
+		g_state.smooth_grav = og_grav_real
 		g_state.mode = "Off"
 		return
 	end
