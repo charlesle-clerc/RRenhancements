@@ -1119,7 +1119,7 @@ local c_box = {
 }
 
 local c_state = {
-	enabled = false,
+	enabled = true,
 	visible = false,
 	transparency = 0.4,
 	shrink_x = 0,
@@ -1169,6 +1169,50 @@ local function restore_cc_original(part)
 	part.Color = orig.color
 end
 
+local function parse_cc_kind(raw)
+	if type(raw) ~= "string" then
+		return nil
+	end
+
+	local upper = string.upper(raw)
+	if string.find(upper, "WALL", 1, true) then
+		return "WALL"
+	end
+	if string.find(upper, "CC", 1, true) or string.find(upper, "CUT", 1, true) then
+		return "CC"
+	end
+
+	return nil
+end
+
+local function get_cc_kind(part, orig)
+	local attr_kind = parse_cc_kind(part:GetAttribute("CornerCutType"))
+		or parse_cc_kind(part:GetAttribute("CCType"))
+		or parse_cc_kind(part:GetAttribute("Type"))
+	if attr_kind then
+		return attr_kind
+	end
+
+	local name_kind = parse_cc_kind(part.Name)
+	if name_kind then
+		return name_kind
+	end
+
+	local parent = part.Parent
+	if parent then
+		local parent_kind = parse_cc_kind(parent.Name)
+		if parent_kind then
+			return parent_kind
+		end
+	end
+
+	if orig and orig.can_collide then
+		return "WALL"
+	end
+
+	return "CC"
+end
+
 local function apply_corner_cut_part(part)
 	capture_cc_original(part)
 	local orig = c_orig[part]
@@ -1183,7 +1227,7 @@ local function apply_corner_cut_part(part)
 
 	part.CanTouch = false
 	part.CanQuery = false
-	part.CanCollide = c_state.wall_collidable
+	part.CanCollide = get_cc_kind(part, orig) == "WALL" and c_state.wall_collidable or false
 
 	local sub = Vector3.new(c_state.shrink_x * 2, c_state.shrink_y * 2, c_state.shrink_z * 2)
 	part.Size = Vector3.new(
