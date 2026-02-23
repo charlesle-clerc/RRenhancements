@@ -12,12 +12,14 @@ local app = create({
 	tabs = {
 		{ id = "grav", name = "Gravity" },
 		{ id = "a_chassis", name = "A-Chassis" },
+		{ id = "corner_cuts", name = "Corner Cuts" },
 		{ id = "ui_settings", name = "UI & Info" },
 	},
 })
 
 local grav = app.tabs.grav
 local a_tab = app.tabs.a_chassis
+local c_tab = app.tabs.corner_cuts
 
 local players = game:GetService("Players")
 local reps = game:GetService("ReplicatedStorage")
@@ -1059,6 +1061,218 @@ task.spawn(function()
 
 	for _, car in ipairs(vehicles:GetChildren()) do
 		apply_tune(car)
+	end
+end)
+
+--// =========================
+--// Corner Cuts
+--// =========================
+local c_box = {
+	main = c_tab:AddLeftGroupbox("Main"),
+	tune = c_tab:AddRightGroupbox("Tuning"),
+}
+
+local c_state = {
+	enabled = true,
+	visible = false,
+	transparency = 0.4,
+	shrink_x = 0,
+	shrink_y = 0,
+	shrink_z = 0,
+	dirty = true,
+}
+
+local c_orig = {}
+
+local function get_corner_cuts_root()
+	local timing = ws:FindFirstChild("Timing_System")
+	if not timing then
+		return nil
+	end
+	return timing:FindFirstChild("CornerCuts")
+end
+
+local function capture_cc_original(part)
+	if c_orig[part] then
+		return
+	end
+	c_orig[part] = {
+		size = part.Size,
+		can_touch = part.CanTouch,
+		can_query = part.CanQuery,
+		can_collide = part.CanCollide,
+		transparency = part.Transparency,
+		material = part.Material,
+		color = part.Color,
+	}
+end
+
+local function restore_cc_original(part)
+	local orig = c_orig[part]
+	if not orig then
+		return
+	end
+	part.Size = orig.size
+	part.CanTouch = orig.can_touch
+	part.CanQuery = orig.can_query
+	part.CanCollide = orig.can_collide
+	part.Transparency = orig.transparency
+	part.Material = orig.material
+	part.Color = orig.color
+end
+
+local function apply_corner_cut_part(part)
+	capture_cc_original(part)
+	local orig = c_orig[part]
+	if not orig then
+		return
+	end
+
+	local touch_on = c_state.enabled
+	part.CanTouch = touch_on
+	part.CanQuery = touch_on
+	part.CanCollide = orig.can_collide
+
+	local sub = Vector3.new(c_state.shrink_x * 2, c_state.shrink_y * 2, c_state.shrink_z * 2)
+	part.Size = Vector3.new(
+		math.max(0.2, orig.size.X - sub.X),
+		math.max(0.2, orig.size.Y - sub.Y),
+		math.max(0.2, orig.size.Z - sub.Z)
+	)
+
+	part.Transparency = c_state.visible and c_state.transparency or 1
+	part.Material = orig.material
+	part.Color = orig.color
+end
+
+local function apply_corner_cuts()
+	local root = get_corner_cuts_root()
+	if not root then
+		return
+	end
+
+	local seen = {}
+	for _, inst in ipairs(root:GetDescendants()) do
+		if inst:IsA("BasePart") then
+			seen[inst] = true
+			apply_corner_cut_part(inst)
+		end
+	end
+
+	for part in pairs(c_orig) do
+		if not seen[part] or not part.Parent then
+			c_orig[part] = nil
+		end
+	end
+end
+
+local c_enabled = c_box.main:AddToggle("cc_enabled", {
+	Text = "Corner Cuts Enabled",
+	Default = c_state.enabled,
+})
+
+local c_visible = c_box.main:AddToggle("cc_visible", {
+	Text = "Visible",
+	Default = c_state.visible,
+})
+
+local c_transparency = c_box.main:AddSlider("cc_transparency", {
+	Text = "Transparency",
+	Default = c_state.transparency,
+	Min = 0,
+	Max = 1,
+	Rounding = 2,
+})
+
+local c_shrink_x = c_box.tune:AddSlider("cc_shrink_x", {
+	Text = "Shrink X (studs)",
+	Default = c_state.shrink_x,
+	Min = 0,
+	Max = 8,
+	Rounding = 2,
+})
+
+local c_shrink_y = c_box.tune:AddSlider("cc_shrink_y", {
+	Text = "Shrink Y (studs)",
+	Default = c_state.shrink_y,
+	Min = 0,
+	Max = 4,
+	Rounding = 2,
+})
+
+local c_shrink_z = c_box.tune:AddSlider("cc_shrink_z", {
+	Text = "Shrink Z (studs)",
+	Default = c_state.shrink_z,
+	Min = 0,
+	Max = 4,
+	Rounding = 2,
+})
+
+c_box.tune:AddButton({
+	Text = "Restore Original",
+	Func = function()
+		for part in pairs(c_orig) do
+			if part and part.Parent then
+				restore_cc_original(part)
+			end
+		end
+	end,
+})
+
+bind_many({
+	{
+		ctrl = c_enabled,
+		set = function(v)
+			c_state.enabled = v
+			c_state.dirty = true
+		end,
+	},
+	{
+		ctrl = c_visible,
+		set = function(v)
+			c_state.visible = v
+			c_state.dirty = true
+		end,
+	},
+	{
+		ctrl = c_transparency,
+		set = function(v)
+			c_state.transparency = math.clamp(v, 0, 1)
+			c_state.dirty = true
+		end,
+	},
+	{
+		ctrl = c_shrink_x,
+		set = function(v)
+			c_state.shrink_x = math.max(0, v)
+			c_state.dirty = true
+		end,
+	},
+	{
+		ctrl = c_shrink_y,
+		set = function(v)
+			c_state.shrink_y = math.max(0, v)
+			c_state.dirty = true
+		end,
+	},
+	{
+		ctrl = c_shrink_z,
+		set = function(v)
+			c_state.shrink_z = math.max(0, v)
+			c_state.dirty = true
+		end,
+	},
+})
+
+task.spawn(function()
+	local cc_t = 0
+	while task.wait(0.1) do
+		cc_t += 0.1
+		if c_state.dirty or cc_t >= 0.5 then
+			cc_t = 0
+			apply_corner_cuts()
+			c_state.dirty = false
+		end
 	end
 end)
 
