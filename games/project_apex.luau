@@ -14,6 +14,8 @@ local app = create({
 		{ id = "a_chassis", name = "A-Chassis" },
 		{ id = "corner_cuts", name = "Corner Cuts" },
 		{ id = "pit_system", name = "Pit System" },
+		{ id = "lap_system", name = "Lap System" },
+		{ id = "economy", name = "Economy" },
 		{ id = "ui_settings", name = "UI & Info" },
 	},
 })
@@ -22,6 +24,8 @@ local grav = app.tabs.grav
 local a_tab = app.tabs.a_chassis
 local c_tab = app.tabs.corner_cuts
 local p_tab = app.tabs.pit_system
+local l_tab = app.tabs.lap_system
+local e_tab = app.tabs.economy
 
 local players = game:GetService("Players")
 local reps = game:GetService("ReplicatedStorage")
@@ -30,9 +34,16 @@ local run_service = game:GetService("RunService")
 local lp = players.LocalPlayer
 
 --// Shared helpers
+local function is_num_obj(x)
+	return x and (x:IsA("NumberValue") or x:IsA("IntValue"))
+end
+
 local function bind_changed(ctrl, setter)
 	ctrl:OnChanged(function(v)
-		setter(v)
+		local ok, err = pcall(setter, v)
+		if not ok then
+			warn("[project_apex] OnChanged callback error: " .. tostring(err))
+		end
 	end)
 end
 
@@ -59,6 +70,14 @@ local function destroy_named(parent, name)
 			x:Destroy()
 		end
 	end
+end
+
+local function to_nonneg_number(value)
+	local n = tonumber(value)
+	if not n then
+		return nil
+	end
+	return math.max(0, n)
 end
 
 --// =========================
@@ -157,7 +176,12 @@ local function apply_tune(car)
 	end
 end
 
-local function get_ui_car()
+local ui_car_cache = {
+	stamp = 0,
+	car = nil,
+}
+
+local function resolve_ui_car()
 	local pg = lp:FindFirstChild("PlayerGui")
 	if not pg then
 		return nil
@@ -178,6 +202,22 @@ local function get_ui_car()
 	end
 
 	return nil
+end
+
+-- Hot path helper used by multiple periodic systems. Cache for a short window.
+local function get_ui_car(force_refresh)
+	local now = os.clock()
+	if force_refresh then
+		ui_car_cache.stamp = 0
+	end
+
+	if now - ui_car_cache.stamp < 0.05 then
+		return ui_car_cache.car
+	end
+
+	ui_car_cache.stamp = now
+	ui_car_cache.car = resolve_ui_car()
+	return ui_car_cache.car
 end
 
 local function clear_dmg(car)
@@ -811,7 +851,7 @@ local function get_rt_num(key)
 	end
 
 	local n = tyre:FindFirstChild(key)
-	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
+	if is_num_obj(n) then
 		return n
 	end
 
@@ -839,7 +879,7 @@ end
 local function get_wt_num(key, car_name, tyre_name)
 	local tyre = get_wt_tyre(car_name, tyre_name)
 	local n = tyre and tyre:FindFirstChild(key)
-	if n and (n:IsA("NumberValue") or n:IsA("IntValue")) then
+	if is_num_obj(n) then
 		return n
 	end
 	return nil
@@ -1060,65 +1100,6 @@ do
 end
 
 task.spawn(function()
-	local act_t = 0
-	local nd_t = 0
-	local rt_t = 0
-	local mem_t = 0
-	local deg_t = 0
-	while task.wait(0.05) do
-		if a_state.enabled then
-			act_t += 0.05
-			if act_t >= 0.25 then
-				act_t = 0
-				destroy_named(lp, "ACTune")
-				destroy_named(reps:FindFirstChild("Events"), "ACTune")
-			end
-		else
-			act_t = 0
-		end
-
-		if a_state.nd_fx or a_state.nd_vis then
-			nd_t += 0.05
-			if nd_t >= 0.2 then
-				nd_t = 0
-				nd_tick()
-			end
-		else
-			nd_t = 0
-		end
-
-		if a_state.force_drs or a_state.df_lock or a_state.global_drs_lock then
-			rt_t += 0.05
-			if rt_t >= 0.15 then
-				rt_t = 0
-				rt_tick()
-			end
-		else
-			rt_t = 0
-		end
-
-		mem_t += 0.05
-		if mem_t >= 0.3 then
-			mem_t = 0
-			apply_mem_rt()
-		end
-
-		if a_state.no_deg then
-			deg_t += 0.05
-			if deg_t >= a_state.deg_delay then
-				deg_t = 0
-				local car = get_ui_car()
-				if car then
-					refresh_tyres(car)
-				end
-			end
-		else
-			deg_t = 0
-		end
-	end
-end)
-
-task.spawn(function()
 	local vehicles = ws:WaitForChild("Vehicles")
 	vehicles.ChildAdded:Connect(function(x)
 		apply_tune(x)
@@ -1162,6 +1143,7 @@ local function capture_cc_original(part)
 	if c_orig[part] then
 		return
 	end
+	-- Snapshot once so toggling/retuning always restores exact original state.
 	c_orig[part] = {
 		size = part.Size,
 		can_touch = part.CanTouch,
@@ -1334,18 +1316,6 @@ bind_many({
 		end,
 	},
 })
-
-task.spawn(function()
-	local cc_t = 0
-	while task.wait(0.1) do
-		cc_t += 0.1
-		if c_state.dirty or cc_t >= 0.5 then
-			cc_t = 0
-			apply_corner_cuts()
-			c_state.dirty = false
-		end
-	end
-end)
 
 --// =========================
 --// Pit System
@@ -1630,16 +1600,371 @@ call_ctrl(p_hold_regen, "SetValue", p_state.hold_regen)
 call_ctrl(p_hold_time, "SetValue", p_state.hold_time)
 p_init_sync = false
 
-task.spawn(function()
-	local p_t = 0
-	while task.wait(0.05) do
-		p_t += 0.05
-		if p_t >= 0.15 then
-			p_t = 0
-			pit_tick()
+--// =========================
+--// Lap System
+--// =========================
+local reps_events = reps:FindFirstChild("Events")
+local reps_values = reps:FindFirstChild("Values")
+local timer_event = reps_events and reps_events:FindFirstChild("Timer")
+local timer_info = reps_values and reps_values:FindFirstChild("TimerInfo")
+local timer_info_value = timer_info and timer_info:FindFirstChild("Value")
+local upgrade_event = reps_events and reps_events:FindFirstChild("UpgradeCar")
+
+local has_timer_event = timer_event and timer_event:IsA("RemoteEvent")
+local has_timer_info = timer_info_value and timer_info_value:IsA("StringValue")
+local has_upgrade_event = upgrade_event and upgrade_event:IsA("RemoteFunction")
+
+local ls_box = {
+	lapimport = l_tab:AddLeftGroupbox("Lap Import"),
+}
+
+if not has_timer_event then
+	ls_box.lapimport:AddLabel("Lap import is unavailable.")
+else
+	local ls_state = {
+		s1 = nil,
+		s2 = nil,
+		s3 = nil,
+	}
+
+	local function lap_ready()
+		return type(ls_state.s1) == "number" and type(ls_state.s2) == "number" and type(ls_state.s3) == "number"
+	end
+
+	local function lap_total()
+		return ls_state.s1 + ls_state.s2 + ls_state.s3
+	end
+
+	ls_box.lapimport:AddInput("plschangethis", {
+		Text = "S1 time",
+		Default = "",
+		Placeholder = "Input here",
+		Callback = function(value)
+			ls_state.s1 = to_nonneg_number(value)
+		end,
+	})
+
+	ls_box.lapimport:AddInput("plschangethis2", {
+		Text = "S2 time",
+		Default = "",
+		Placeholder = "Input here",
+		Callback = function(value)
+			ls_state.s2 = to_nonneg_number(value)
+		end,
+	})
+
+	ls_box.lapimport:AddInput("plschangethis3", {
+		Text = "S3 time",
+		Default = "",
+		Placeholder = "Input here",
+		Callback = function(value)
+			ls_state.s3 = to_nonneg_number(value)
+		end,
+	})
+
+	ls_box.lapimport
+		:AddButton({
+			Text = "Instant",
+			Func = function()
+				if not lap_ready() then
+					return
+				end
+				timer_event:FireServer(1, ls_state.s1)
+				timer_event:FireServer(2, ls_state.s2)
+				timer_event:FireServer(3, ls_state.s3)
+				timer_event:FireServer(4, lap_total())
+			end,
+		})
+		:AddButton({
+			Text = "Accurate",
+			Func = function()
+				if not lap_ready() then
+					return
+				end
+				task.wait(ls_state.s1)
+				timer_event:FireServer(1, ls_state.s1)
+				task.wait(ls_state.s2)
+				timer_event:FireServer(2, ls_state.s2)
+				task.wait(ls_state.s3)
+				timer_event:FireServer(3, ls_state.s3)
+				timer_event:FireServer(4, lap_total())
+			end,
+		})
+end
+
+--// =========================
+--// Economy
+--// =========================
+
+local warning_text =
+	"The autofarm is preset for BAKU with a 1989-1994 era car. Please adjust properly to ensure good results."
+
+e_tab:UpdateWarningBox({
+	Title = "Warning",
+	Text = warning_text,
+	IsNormal = false,
+	Visible = true,
+	LockSize = true,
+})
+
+local e_box = {
+	af = e_tab:AddLeftGroupbox("Auto farm"),
+	ugprades = e_tab:AddRightGroupbox("Upgrades"),
+}
+local e_state = {
+	autofarm = {
+		enabled = false,
+		blatant = false,
+		sector_times = {
+			[1] = 26,
+			[2] = 32,
+			[3] = 22,
+		},
+		sector_range = 1000,
+	},
+}
+
+local function set_lap(s1, s2, s3)
+	if not has_timer_event then
+		return
+	end
+	local tt = s1 + s2 + s3
+	timer_event:FireServer(1, s1)
+	timer_event:FireServer(2, s2)
+	timer_event:FireServer(3, s3)
+	timer_event:FireServer(4, tt)
+end
+
+local function convert_t(val)
+	if type(val) ~= "string" then
+		return 0
+	end
+	local min, sec = string.match(val, "(%d+):(%d+)")
+	min = tonumber(min) or 0
+	sec = tonumber(sec) or 0
+	return (min * 60) + sec
+end
+
+if not (has_timer_event and has_timer_info) then
+	e_box.af:AddLabel("Auto farm is unavailable.")
+else
+	local toggle_thing = e_box.af:AddToggle("plschangethis", {
+		Text = "Enable autofarm",
+		Default = false,
+	})
+
+	local toggle_thing2 = e_box.af:AddToggle("plschangethis22", {
+		Text = "Enable blatant",
+		Default = false,
+	})
+	toggle_thing2:OnChanged(function(state)
+		e_state.autofarm.blatant = state
+	end)
+
+	local timer_string = timer_info_value
+	toggle_thing:OnChanged(function(state)
+		e_state.autofarm.enabled = state
+
+		if e_state.autofarm.enabled then
+			task.spawn(function()
+				while task.wait(2) do
+					if not e_state.autofarm.enabled then
+						break
+					end
+
+					local s1_base = e_state.autofarm.sector_times[1] or 26
+					local s2_base = e_state.autofarm.sector_times[2] or 32
+					local s3_base = e_state.autofarm.sector_times[3] or 22
+					local s_total = s1_base + s2_base + s3_base
+
+					local should_submit = true
+					if not e_state.autofarm.blatant and convert_t(timer_string.Value) >= (780 - s_total) then
+						should_submit = false
+					end
+
+					if should_submit then
+						local s1 = s1_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						local s2 = s2_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						local s3 = s3_base + (math.random(1, e_state.autofarm.sector_range) / 1000)
+						set_lap(s1, s2, s3)
+					end
+				end
+			end)
+		end
+	end)
+
+	e_box.af:AddInput("plschangethis", {
+		Text = "S1 time",
+		Default = "26",
+		Placeholder = "Input here",
+		Callback = function(value)
+			e_state.autofarm.sector_times[1] = to_nonneg_number(value)
+		end,
+	})
+
+	e_box.af:AddInput("plschangethis2", {
+		Text = "S2 time",
+		Default = "32",
+		Placeholder = "Input here",
+		Callback = function(value)
+			e_state.autofarm.sector_times[2] = to_nonneg_number(value)
+		end,
+	})
+
+	e_box.af:AddInput("plschangethis3", {
+		Text = "S3 time",
+		Default = "22",
+		Placeholder = "Input here",
+		Callback = function(value)
+			e_state.autofarm.sector_times[3] = to_nonneg_number(value)
+		end,
+	})
+
+	e_box.af:AddSlider("plschangethisslider", {
+		Text = "Range",
+		Default = 1000,
+		Min = 0,
+		Max = 1000,
+		Rounding = 0,
+		Suffix = "ms",
+		Callback = function(value)
+			e_state.autofarm.sector_range = value
+		end,
+	})
+end
+
+local aero = {
+	"Body Strakes",
+	"Mirrors",
+	"Floor",
+	"Front Wing",
+	"Rear Wing",
+}
+local chassis = {
+	"Weight reduction",
+	"Weight reduction2",
+	"Thin nose",
+	"Packaging",
+}
+local engine = {
+	"Fuel",
+	"ICE",
+	"MGU-K",
+	"Weight",
+	"Turbo",
+}
+
+local types = {
+	"Aero",
+	"Chassis",
+	"Engine",
+}
+
+local cars = {
+	["2025"] = {
+		"BmRacing",
+		"Karl-Ringer",
+		"Werner",
+		"DMB",
+		"Bison GP",
+		"Ferrucha",
+		"Ascolt",
+		"Hans",
+		"Evans Racing",
+		"Pelissier",
+		"Montane",
+		"Bolting Bisons",
+		"Theron Doorn",
+		"Schmutzig",
+		"EX",
+		"Santen",
+		"Alten",
+		"Saetta GP",
+		"Mercury",
+	},
+}
+
+local upgrades_state = {
+	manufacturers = {},
+	types = {},
+}
+
+local function normalize_multi_values(values)
+	local out = {}
+	if type(values) ~= "table" then
+		return out
+	end
+
+	for k, v in pairs(values) do
+		if type(k) == "number" and type(v) == "string" then
+			table.insert(out, v)
+		elseif v == true and type(k) == "string" then
+			table.insert(out, k)
 		end
 	end
-end)
+	return out
+end
+
+if not has_upgrade_event then
+	e_box.ugprades:AddLabel("Upgrades are unavailable.")
+else
+	local manufacter_dropdown = e_box.ugprades:AddDropdown("pls updatethis", {
+		Values = cars["2025"],
+		Default = nil,
+		Multi = true,
+		Text = "Manufacturers",
+		Searchable = true,
+	})
+
+	manufacter_dropdown:OnChanged(function(vals)
+		upgrades_state.manufacturers = vals
+	end)
+
+	local types_dropdown = e_box.ugprades:AddDropdown("pls updatethis2", {
+		Values = types,
+		Default = nil,
+		Multi = true,
+		Text = "Types",
+		Searchable = true,
+	})
+
+	types_dropdown:OnChanged(function(vals)
+		upgrades_state.types = vals
+	end)
+
+	local function upgrade(era, kind, manufacturer, part)
+		upgrade_event:InvokeServer(era, kind, manufacturer, part)
+	end
+
+	e_box.ugprades:AddButton({
+		Text = "Upgrade",
+		Func = function()
+			local manufacturers = normalize_multi_values(upgrades_state.manufacturers)
+			local selected_types = normalize_multi_values(upgrades_state.types)
+			local do_aero = table.find(selected_types, "Aero") ~= nil
+			local do_chassis = table.find(selected_types, "Chassis") ~= nil
+			local do_engine = table.find(selected_types, "Engine") ~= nil
+
+			for _, manufacturer in ipairs(manufacturers) do
+				if do_aero then
+					for _, part in ipairs(aero) do
+						upgrade("2025", "Aero", manufacturer, part)
+					end
+				end
+				if do_chassis then
+					for _, part in ipairs(chassis) do
+						upgrade("2025", "Chassis", manufacturer, part)
+					end
+				end
+				if do_engine then
+					for _, part in ipairs(engine) do
+						upgrade("2025", "Engine", manufacturer, part)
+					end
+				end
+			end
+		end,
+	})
+end
 
 --// =========================
 --// Gravity
@@ -2020,73 +2345,161 @@ bind_changed(g_hook_enabled, function(v)
 	end
 end)
 
-run_service.Heartbeat:Connect(function(dt)
-	local key = car_key(get_ui_car())
-	if key ~= a_prof_key then
-		if a_prof_key then
-			save_prof(a_prof_key)
-		end
-		a_prof_key = key
-		if key and not load_prof(key) then
-			save_prof(key)
-		end
-		sync_slider()
-	end
+-- Shared scheduler for non-gravity periodic tasks to reduce polling threads.
+local sched = {
+	act = 0,
+	nd = 0,
+	rt = 0,
+	mem = 0,
+	deg = 0,
+	cc = 0,
+	pit = 0,
+}
 
-	local speed = read_speed()
-	g_state.speed_delta = speed - g_state.speed
-	g_state.speed = speed
-
-	if g_main_enabled.Value then
-		local up_hit = g_state.up_enabled and eval_set(g_up_modes)
-		local down_hit = g_state.down_enabled and eval_set(g_down_modes)
-		local base = g_state.base_grav
-		local target = base
-
-		if up_hit and not down_hit then
-			target = math.clamp(base * g_state.up_mult, 1, 1000)
-			g_state.mode = "Higher"
-		elseif down_hit and not up_hit then
-			target = math.clamp(base * g_state.down_mult, 1, 1000)
-			g_state.mode = "Lower"
-		else
-			g_state.mode = "Base"
-		end
-
-		g_state.target_grav = target
-		local alpha = 1 - math.exp(-10 * dt)
-		g_state.smooth_grav = g_state.smooth_grav + (target - g_state.smooth_grav) * alpha
-
-		if math.abs(ws.Gravity - g_state.smooth_grav) > 0.01 then
-			ws.Gravity = g_state.smooth_grav
+local function run_periodic(dt)
+	if a_state.enabled then
+		sched.act += dt
+		if sched.act >= 0.25 then
+			sched.act = 0
+			destroy_named(lp, "ACTune")
+			destroy_named(reps:FindFirstChild("Events"), "ACTune")
 		end
 	else
-		g_state.mode = "Off"
-		g_state.target_grav = og_grav
-		g_state.smooth_grav = og_grav
+		sched.act = 0
 	end
 
-	g_state.applied_grav = ws.Gravity
-	g_state.status_dt += dt
-	if g_state.status_dt < 0.1 then
-		return
+	if a_state.nd_fx or a_state.nd_vis then
+		sched.nd += dt
+		if sched.nd >= 0.2 then
+			sched.nd = 0
+			nd_tick()
+		end
+	else
+		sched.nd = 0
 	end
 
-	g_state.status_dt = 0
-	local lines = {
-		mode = "Mode: " .. g_state.mode,
-		speed = string.format("Speed: %.1f", g_state.speed),
-		delta = string.format("Speed Delta: %.3f", g_state.speed_delta),
-		target = string.format("Target Gravity: %.2f", g_state.target_grav),
-		applied = string.format("Applied Gravity: %.2f", g_state.applied_grav),
-		hook = string.format(
-			"Hook: %s (%s)",
-			g_state.hook_enabled and "On" or "Off",
-			g_hook_short[g_state.hook_target]
-		),
-	}
+	if a_state.force_drs or a_state.df_lock or a_state.global_drs_lock then
+		sched.rt += dt
+		if sched.rt >= 0.15 then
+			sched.rt = 0
+			rt_tick()
+		end
+	else
+		sched.rt = 0
+	end
 
-	for key, text in pairs(lines) do
-		set_label(g_status_rows[key], text)
+	sched.mem += dt
+	if sched.mem >= 0.3 then
+		sched.mem = 0
+		apply_mem_rt()
+	end
+
+	if a_state.no_deg then
+		sched.deg += dt
+		if sched.deg >= a_state.deg_delay then
+			sched.deg = 0
+			local car = get_ui_car()
+			if car then
+				refresh_tyres(car)
+			end
+		end
+	else
+		sched.deg = 0
+	end
+
+	if c_state.enabled or c_state.dirty then
+		sched.cc += dt
+		if c_state.dirty or sched.cc >= 0.5 then
+			sched.cc = 0
+			apply_corner_cuts()
+			c_state.dirty = false
+		end
+	else
+		sched.cc = 0
+	end
+
+	sched.pit += dt
+	if sched.pit >= 0.15 then
+		sched.pit = 0
+		pit_tick()
+	end
+end
+
+run_service.Heartbeat:Connect(function(dt)
+	local ok, err = xpcall(function()
+		run_periodic(dt)
+
+		local key = car_key(get_ui_car())
+		if key ~= a_prof_key then
+			if a_prof_key then
+				save_prof(a_prof_key)
+			end
+			a_prof_key = key
+			if key and not load_prof(key) then
+				save_prof(key)
+			end
+			sync_slider()
+		end
+
+		local speed = read_speed()
+		g_state.speed_delta = speed - g_state.speed
+		g_state.speed = speed
+
+		if g_main_enabled.Value then
+			local up_hit = g_state.up_enabled and eval_set(g_up_modes)
+			local down_hit = g_state.down_enabled and eval_set(g_down_modes)
+			local base = g_state.base_grav
+			local target = base
+
+			if up_hit and not down_hit then
+				target = math.clamp(base * g_state.up_mult, 1, 1000)
+				g_state.mode = "Higher"
+			elseif down_hit and not up_hit then
+				target = math.clamp(base * g_state.down_mult, 1, 1000)
+				g_state.mode = "Lower"
+			else
+				g_state.mode = "Base"
+			end
+
+			g_state.target_grav = target
+			local alpha = 1 - math.exp(-10 * dt)
+			g_state.smooth_grav = g_state.smooth_grav + (target - g_state.smooth_grav) * alpha
+
+			if math.abs(ws.Gravity - g_state.smooth_grav) > 0.01 then
+				ws.Gravity = g_state.smooth_grav
+			end
+		else
+			g_state.mode = "Off"
+			g_state.target_grav = og_grav
+			g_state.smooth_grav = og_grav
+		end
+
+		g_state.applied_grav = ws.Gravity
+		g_state.status_dt += dt
+		if g_state.status_dt < 0.1 then
+			return
+		end
+
+		g_state.status_dt = 0
+		local lines = {
+			mode = "Mode: " .. g_state.mode,
+			speed = string.format("Speed: %.1f", g_state.speed),
+			delta = string.format("Speed Delta: %.3f", g_state.speed_delta),
+			target = string.format("Target Gravity: %.2f", g_state.target_grav),
+			applied = string.format("Applied Gravity: %.2f", g_state.applied_grav),
+			hook = string.format(
+				"Hook: %s (%s)",
+				g_state.hook_enabled and "On" or "Off",
+				g_hook_short[g_state.hook_target]
+			),
+		}
+
+		for key, text in pairs(lines) do
+			set_label(g_status_rows[key], text)
+		end
+	end, debug.traceback)
+
+	if not ok then
+		warn("[project_apex] Heartbeat error: " .. tostring(err))
 	end
 end)
